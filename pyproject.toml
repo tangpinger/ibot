@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "owl"
+version = "0.1.0"
+description = "Automated Trading Bot for OKX"
+authors = ["Your Name <you@example.com>"] # Placeholder, can be updated
+readme = "README.md" # Will create this later
+
+[tool.poetry.dependencies]
+python = "^3.8"
+python-dotenv = "^1.0.0"
+ccxt = "^4.1.73" # Check for latest compatible version
+apscheduler = "^3.10.4"
+pandas = "^2.0.3" # Check for latest compatible version
+toml = "^0.10.2"
+matplotlib = "^3.7.2" # For analytics and reporting
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.4.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

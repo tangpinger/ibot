@@ -1,0 +1,35 @@
+# Example configuration for Owl Trading Bot
+
+[api_keys]
+okx_api_key = "YOUR_OKX_API_KEY"
+okx_secret_key = "YOUR_OKX_SECRET_KEY"
+okx_password = "YOUR_OKX_API_PASSPHRASE" # For live trading if required by API version
+
+[trading_params]
+instrument_id = "BTC-USDT-SWAP" # Or "BTC/USDT" for spot, check CCXT for correct ID
+n_day_high = 20 # Value of N for N-day high breakout strategy
+trade_amount = 0.001 # Example: trade 0.001 BTC per trade. Adjust based on your capital.
+# Or specify as a percentage of capital, e.g., trade_amount_percent = 0.05 (5%)
+
+[mode]
+dry_run = true # Set to false for live trading
+
+[scheduler]
+# Times are in UTC+8 (Asia/Shanghai)
+daily_data_fetch_time = "10:00"
+buy_check_time = "15:55" # Start checking for buy signals
+buy_execute_time = "16:00" # Execute buy if signal present
+sell_check_time = "09:50" # Start checking for sell
+sell_execute_time = "09:55" # Execute sell
+
+[logging]
+log_file = "owl_bot.log"
+log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+[backtesting]
+start_date = "2022-01-01"
+end_date = "2023-01-01"
+initial_capital = 10000.0 # USD or equivalent in quote currency
+commission_rate = 0.001 # 0.1% per trade (example for OKX taker fee)
+#滑点
+slippage = 0.0005 # 0.05% slippage per trade (optional)
