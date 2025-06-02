@@ -30,18 +30,19 @@ class DataFetcher:
             'apiKey': api_key,
             'secret': secret_key,
             'password': password,
-            # 'verbose': True, # Uncomment for detailed ccxt output, useful for debugging
+            'verbose': False, # Ensure this is False or commented out for non-debug runs
         }
         # Remove None values from config as ccxt expects them to be absent if not used
         config = {k: v for k, v in config.items() if v is not None}
 
         if proxy_url:
-            proxies = {
+            proxies_dict = {
                 'http': proxy_url,
                 'https': proxy_url,
             }
-            config['aiohttp_proxy'] = proxy_url
-            config['requests_proxy'] = proxies
+            config['aiohttp_proxy'] = proxy_url      # For async (aiohttp)
+            config['requests_proxy'] = proxies_dict  # For sync (requests)
+            config['proxies'] = proxies_dict         # Generic/fallback for ccxt
             # proxy_type is noted, but ccxt usually derives type from proxy_url scheme (e.g. socks5h://)
             # If specific handling for proxy_type is needed for ccxt, it would be added here.
 
