@@ -13,6 +13,8 @@ apscheduler = "^3.10.4"
 pandas = "^2.0.3" # Check for latest compatible version
 toml = "^0.10.2"
 matplotlib = "^3.7.2" # For analytics and reporting
+PySocks = "*" # For SOCKS proxy support in requests (used by ccxt sync)
+aiohttp-socks = "*" # For SOCKS proxy support in aiohttp (used by ccxt async)
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.4.0"
