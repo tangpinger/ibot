@@ -8,6 +8,8 @@ import pytz
 # from owl.data_fetcher.fetcher import DataFetcher # Placeholder if direct type hint is needed
 # from owl.signal_generator.generator import SignalGenerator # For type hinting if needed, instance is passed
 from owl.analytics_reporting.reporter import generate_performance_report
+from owl.analytics_reporting.plotter import plot_equity_curve
+# pandas as pd is already imported at the top of the file
 
 class BacktestingEngine:
     """
@@ -368,6 +370,35 @@ class BacktestingEngine:
             print(f"Could not generate full report: {report['error']}")
         else:
             print("Could not generate report or report is empty.")
+
+        # Plot equity curve
+        print("\nAttempting to generate equity curve plot...")
+        if self.portfolio_history:
+            # Convert portfolio_history (list of dicts) to DataFrame
+            portfolio_df = pd.DataFrame(self.portfolio_history)
+
+            # Ensure 'timestamp' column is in datetime format
+            # The plotter also does this, but good practice to ensure here as well
+            try:
+                portfolio_df['timestamp'] = pd.to_datetime(portfolio_df['timestamp'])
+
+                plot_output_path = "backtest_equity_curve.png"
+                # In a more advanced setup, output_path could be derived from config or include a timestamp
+
+                plot_success = plot_equity_curve(
+                    portfolio_history_df=portfolio_df,
+                    output_path=plot_output_path
+                )
+                # plot_equity_curve function already prints success or error messages
+                if plot_success:
+                    print(f"Equity curve generation process completed. Check {plot_output_path}")
+                else:
+                    print("Equity curve generation process encountered an issue (see plotter errors above).")
+
+            except Exception as e: # Catch errors during DataFrame conversion or unexpected issues
+                print(f"Error preparing data for plotting or during plotting call: {e}")
+        else:
+            print("Portfolio history is empty, skipping equity curve plot generation.")
 
         print("\nBacktest run finished.")
         # pass # pass is not needed at the end of the function if there's other code
