@@ -53,8 +53,24 @@ Trading cryptocurrencies involves significant risk. This bot is provided for edu
 poetry run python owl/main.py
 \`\`\`
 
-**Backtesting:**
-(Command to be defined)
+## Running a Backtest
+
+To run a backtest simulation of the trading strategy using historical data:
+
+1.  **Ensure Configuration is Ready:**
+    Make sure your `config.toml` file is correctly set up, especially the `[backtesting]` section with parameters like `symbol`, `timeframe`, `start_date`, `end_date`, and `initial_capital`. API keys are generally not required for backtesting public data, but ensure `exchange_id` and any `proxy_settings` are correct if needed.
+
+2.  **Run the Backtest Command:**
+    Execute the following command from the project's root directory:
+    \`\`\`bash
+    python owl/main.py --mode backtest
+    \`\`\`
+    Or, if you are using Poetry for environment management:
+    \`\`\`bash
+    poetry run python owl/main.py --mode backtest
+    \`\`\`
+
+The backtesting engine will then simulate the strategy based on your configuration and output the results.
 
 ## Modules
 
