@@ -5,11 +5,12 @@ okx_api_key = "YOUR_OKX_API_KEY"
 okx_secret_key = "YOUR_OKX_SECRET_KEY"
 okx_password = "YOUR_OKX_API_PASSPHRASE" # For live trading if required by API version
 
-[trading_params]
-instrument_id = "BTC-USDT-SWAP" # Or "BTC/USDT" for spot, check CCXT for correct ID
-n_day_high = 20 # Value of N for N-day high breakout strategy
-trade_amount = 0.001 # Example: trade 0.001 BTC per trade. Adjust based on your capital.
-# Or specify as a percentage of capital, e.g., trade_amount_percent = 0.05 (5%)
+[strategy]
+# symbol = "BTC-USDT-SWAP" # This was instrument_id, moved to backtesting for engine consistency
+n_day_high_period = 20 # Value of N for N-day high breakout strategy
+buy_cash_percentage = 0.8 # Spend 80% of current cash on a BUY signal
+risk_free_rate = 0.0 # Annual risk-free rate for Sharpe Ratio calculation
+# sell_params, stop_loss, take_profit can be added here later
 
 [mode]
 dry_run = true # Set to false for live trading
@@ -27,9 +28,19 @@ log_file = "owl_bot.log"
 log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 [backtesting]
+symbol = "BTC-USDT-SWAP" # Or "BTC/USDT" for spot, check CCXT for correct ID for data fetching
+timeframe = "1d" # Default timeframe for OHLCV data
 start_date = "2022-01-01"
 end_date = "2023-01-01"
 initial_capital = 10000.0 # USD or equivalent in quote currency
 commission_rate = 0.001 # 0.1% per trade (example for OKX taker fee)
-#滑点
-slippage = 0.0005 # 0.05% slippage per trade (optional)
+#slippage = 0.0005 # 0.05% slippage per trade (optional, for future implementation)
+
+# Note: The 'symbol' in [strategy] was the original 'instrument_id'.
+# For backtesting, the BacktestingEngine will primarily use config['backtesting']['symbol'].
+# Ensure this matches what your data_fetcher expects.
+# If live trading uses a different symbol identifier, that can be managed by the live trading components
+# potentially referencing config['strategy']['symbol_live'] or similar if needed.
+# For now, keeping one main 'symbol' in [backtesting] for clarity in the engine.
+# The signal generator itself is agnostic to the symbol string, it just processes data.
+# The engine provides the symbol to the data_fetcher and order simulator.
