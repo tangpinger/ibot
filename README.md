@@ -39,6 +39,13 @@ Trading cryptocurrencies involves significant risk. This bot is provided for edu
     Edit \`config.toml\` with your OKX API keys (if not in dry-run), trading parameters, and other settings.
     **IMPORTANT: Ensure your API keys have the necessary permissions for trading if you intend to run in live mode.**
 
+    **Proxy Configuration:**
+    The `DataFetcher` module supports connecting to exchanges via a proxy. This is useful for users in restricted network environments or those who wish to route their traffic through specific IP addresses.
+    - Supported proxy types include SOCKS5, SOCKS5h, HTTP, and others supported by the underlying `requests` and `aiohttp` libraries via the URL scheme.
+    - To configure a proxy, edit the `[proxy]` section in your `config.toml` file. Refer to `config.example.toml` for examples.
+    - The `proxy_url` should be in a format like `socks5h://user:pass@your_proxy_host:port` (for SOCKS5h with authentication) or `http://your_proxy_host:port`.
+    - The `proxy_type` can also be specified, but often the URL scheme (e.g., `socks5h://`) is sufficient.
+
 ## Usage (Planned)
 
 **Dry-Run Mode:**

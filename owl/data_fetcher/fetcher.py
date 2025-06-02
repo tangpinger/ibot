@@ -7,7 +7,7 @@ class DataFetcher:
     """
     Handles fetching market data from an exchange using ccxt.
     """
-    def __init__(self, api_key=None, secret_key=None, password=None, exchange_id='okx', is_sandbox_mode=False):
+    def __init__(self, api_key=None, secret_key=None, password=None, exchange_id='okx', is_sandbox_mode=False, proxy_url=None, proxy_type=None):
         """
         Initializes the DataFetcher.
 
@@ -17,6 +17,8 @@ class DataFetcher:
             password (str, optional): API password/passphrase if required (e.g., by OKX).
             exchange_id (str, optional): ID of the exchange to connect to (default: 'okx').
             is_sandbox_mode (bool, optional): Whether to use the exchange's sandbox/testnet.
+            proxy_url (str, optional): URL of the proxy server (e.g., 'http://user:pass@host:port', 'socks5h://user:pass@host:port').
+            proxy_type (str, optional): Type of the proxy (e.g., 'http', 'socks5', 'socks5h'). Note: often part of proxy_url.
         """
         self.exchange_id = exchange_id
         try:
@@ -32,6 +34,16 @@ class DataFetcher:
         }
         # Remove None values from config as ccxt expects them to be absent if not used
         config = {k: v for k, v in config.items() if v is not None}
+
+        if proxy_url:
+            proxies = {
+                'http': proxy_url,
+                'https': proxy_url,
+            }
+            config['aiohttp_proxy'] = proxy_url
+            config['requests_proxy'] = proxies
+            # proxy_type is noted, but ccxt usually derives type from proxy_url scheme (e.g. socks5h://)
+            # If specific handling for proxy_type is needed for ccxt, it would be added here.
 
         self.exchange = exchange_class(config)
 
@@ -183,65 +195,85 @@ if __name__ == "__main__":
     API_KEY = None
     API_SECRET = None
     API_PASSWORD = None
-    IS_SANDBOX = False # Set to true if you have OKX demo trading keys
+    EXCHANGE_ID = 'okx'  # Default exchange_id
+    IS_SANDBOX = False   # Default sandbox mode
+    PROXY_URL = None
+    PROXY_TYPE = None
 
     try:
         from owl.config_manager.config import load_config
         config = load_config() # Expects config.toml in project root
-        API_KEY = config.get('api_keys', {}).get('okx_api_key')
-        API_SECRET = config.get('api_keys', {}).get('okx_secret_key')
-        API_PASSWORD = config.get('api_keys', {}).get('okx_password')
-        # Check if config.toml has a sandbox mode flag, e.g. in a [exchange_settings] table
-        # For now, manually set IS_SANDBOX or rely on ccxt's default behavior / demo keys
-        # IS_SANDBOX = config.get('mode', {}).get('okx_sandbox_mode', False) # Example
-        print("Config loaded. API keys might be present.")
+
+        # Load API keys
+        api_keys_config = config.get('api_keys', {})
+        API_KEY = api_keys_config.get('okx_api_key')
+        API_SECRET = api_keys_config.get('okx_secret_key')
+        API_PASSWORD = api_keys_config.get('okx_password')
+
+        # Load exchange settings
+        exchange_settings = config.get('exchange_settings', {})
+        EXCHANGE_ID = exchange_settings.get('exchange_id', 'okx')
+        IS_SANDBOX = exchange_settings.get('sandbox_mode', False)
+
+        # Load proxy settings
+        proxy_settings = config.get('proxy', {})
+        if not proxy_settings: # Fallback to exchange_settings for proxy info
+            proxy_settings = config.get('exchange_settings', {})
+        PROXY_URL = proxy_settings.get('proxy_url')
+        PROXY_TYPE = proxy_settings.get('proxy_type')
+
+        print("Config loaded for testing DataFetcher:")
+        print(f"  API_KEY: {'Set' if API_KEY else 'Not set'}")
+        print(f"  EXCHANGE_ID: {EXCHANGE_ID}")
+        print(f"  IS_SANDBOX: {IS_SANDBOX}")
+        print(f"  PROXY_URL: {PROXY_URL}")
+        print(f"  PROXY_TYPE: {PROXY_TYPE}")
+
     except Exception as e:
-        print(f"Could not load config for testing DataFetcher: {e}. Running with public access only.")
+        print(f"Could not load config for testing DataFetcher: {e}. Running with defaults and public access only.")
 
 
-    # Initialize DataFetcher (use sandbox mode for OKX if testing with demo keys)
-    # OKX sandbox: self.exchange.options['defaultType'] = 'swap' # or spot
-    # And use the demo trading endpoint if not using set_sandbox_mode()
-    # For OKX, `set_sandbox_mode(True)` should work if ccxt version supports it well.
-    # Or one might need to use specific API keys for the demo environment.
+    # Initialize DataFetcher
     try:
-        # Set is_sandbox_mode=True if you are using OKX demo account API keys
-        fetcher = DataFetcher(api_key=API_KEY, secret_key=API_SECRET, password=API_PASSWORD, exchange_id='okx', is_sandbox_mode=IS_SANDBOX)
+        fetcher = DataFetcher(
+            api_key=API_KEY,
+            secret_key=API_SECRET,
+            password=API_PASSWORD,
+            exchange_id=EXCHANGE_ID,
+            is_sandbox_mode=IS_SANDBOX,
+            proxy_url=PROXY_URL,
+            proxy_type=PROXY_TYPE
+        )
 
         # Test fetch_ohlcv
-        print("\n--- Testing fetch_ohlcv (BTC/USDT, 1d, last 5 candles) ---")
+        # Use a symbol relevant to the configured exchange_id, or a common one like BTC/USDT
+        # For OKX, BTC/USDT (spot) or BTC/USDT/USDT (swap if defaultType is swap) can be used.
+        # The exact symbol might depend on whether markets are loaded and what the default is.
+        test_symbol = "BTC/USDT"
+        if EXCHANGE_ID == 'okx': # Potentially adjust symbol based on typical OKX usage or if sandbox implies demo swap
+             # test_symbol = "BTC-USDT-SWAP" # if using instrument_id like in config.example for backtesting
+             pass # Keep BTC/USDT as a general ccxt spot symbol
+
+        print(f"\n--- Testing fetch_ohlcv ({test_symbol}, 1d, last 5 candles for {EXCHANGE_ID}) ---")
         # To get the last N candles, we don't set 'since'. 'limit' gives recent ones.
         # For specific historical data, 'since' is timestamp in ms.
-        # Example: Get data for the last 5 days for BTC/USDT spot market
-        # Note: OKX uses BTC-USDT for spot, BTC-USDT-SWAP for perpetual swaps.
-        # The design doc mentions "BTC/USDT" which usually implies spot.
-        # Instrument ID from config.example.toml is "BTC-USDT-SWAP"
-        instrument_id_spot = "BTC/USDT" # CCXT standard for spot
-        instrument_id_swap = "BTC/USDT/USDT" # Example for OKX USDT margined swap, check ccxt docs
-                                         # A common one is BTC/USDT:USDT for USDT margined swap
-                                         # Or use the specific ID from exchange.markets
-        # Let's try with a common spot symbol first.
-        # If markets are loaded, you can find the correct symbol:
-        # print(fetcher.exchange.markets.keys()) # to list all symbols
-
-        # For OKX Spot BTC/USDT
-        ohlcv_data = fetcher.fetch_ohlcv(symbol=instrument_id_spot, timeframe='1d', limit=5)
+        ohlcv_data = fetcher.fetch_ohlcv(symbol=test_symbol, timeframe='1d', limit=5)
         if ohlcv_data is not None and not ohlcv_data.empty:
             print("OHLCV Data:")
             print(ohlcv_data.head())
         else:
-            print(f"Could not fetch OHLCV data for {instrument_id_spot} or data was empty.")
+            print(f"Could not fetch OHLCV data for {test_symbol} or data was empty.")
 
         # Test fetch_ticker_price
-        print(f"\n--- Testing fetch_ticker_price ({instrument_id_spot}) ---")
-        price = fetcher.fetch_ticker_price(symbol=instrument_id_spot)
+        print(f"\n--- Testing fetch_ticker_price ({test_symbol} for {EXCHANGE_ID}) ---")
+        price = fetcher.fetch_ticker_price(symbol=test_symbol)
         if price is not None:
-            print(f"Current price for {instrument_id_spot}: {price}")
+            print(f"Current price for {test_symbol}: {price}")
         else:
-            print(f"Could not fetch ticker price for {instrument_id_spot}.")
+            print(f"Could not fetch ticker price for {test_symbol}.")
 
         # Test get_account_balance (will likely fail/return empty if keys are invalid or not for sandbox)
-        print("\n--- Testing get_account_balance (USDT) ---")
+        print(f"\n--- Testing get_account_balance (USDT on {EXCHANGE_ID}) ---")
         if API_KEY and API_SECRET: # Only attempt if keys are somewhat present
             usdt_balance = fetcher.get_account_balance(currency_code='USDT')
             if usdt_balance is not None:
