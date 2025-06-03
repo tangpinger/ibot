@@ -17,7 +17,7 @@ class BacktestingEngine:
     """
     Orchestrates the backtesting process.
     """
-    def __init__(self, config, data_fetcher, signal_generator):
+    def __init__(self, config, data_fetcher, signal_generator, force_fetch=False):
         """
         Initializes the BacktestingEngine.
 
@@ -25,9 +25,12 @@ class BacktestingEngine:
             config: The configuration object.
             data_fetcher: An instance of the data fetcher.
             signal_generator: An instance of the signal generator.
+            force_fetch (bool, optional): Whether to force fetching data from the exchange,
+                                         ignoring cache. Defaults to False.
         """
         self.config = config
         self.data_fetcher = data_fetcher
+        self.force_fetch = force_fetch
         # self.signal_generator = signal_generator # Instantiation moved below
 
         # Portfolio and trade logging - Critical backtesting parameters
@@ -200,7 +203,8 @@ class BacktestingEngine:
             self.daily_historical_data = self.data_fetcher.fetch_ohlcv(
                 symbol=symbol,
                 timeframe='1d', # Explicitly '1d'
-                since=since_timestamp
+                since=since_timestamp,
+                force_fetch=self.force_fetch
             )
         except Exception as e:
             print(f"Error during DAILY data fetching: {e}")
@@ -216,7 +220,8 @@ class BacktestingEngine:
             self.hourly_historical_data = self.data_fetcher.fetch_ohlcv(
                 symbol=symbol,
                 timeframe='1h', # Explicitly '1h'
-                since=since_timestamp # Use the same 'since' timestamp
+                since=since_timestamp, # Use the same 'since' timestamp
+                force_fetch=self.force_fetch
             )
         except Exception as e:
             print(f"Error during HOURLY data fetching: {e}")

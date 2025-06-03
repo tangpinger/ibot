@@ -16,6 +16,11 @@ def main():
         default='backtest', # Default to backtest mode
         help="Operating mode: 'backtest' for backtesting, 'trade' for live trading."
     )
+    parser.add_argument(
+        "--force-fetch",
+        action='store_true',
+        help="Force fetch data from the exchange, ignoring any cached data."
+    )
     args = parser.parse_args()
 
     print("Loading configuration...")
@@ -60,7 +65,8 @@ def main():
                 exchange_id=exchange_id,
                 is_sandbox_mode=is_sandbox_mode,
                 proxy_url=proxy_url,
-                proxy_type=proxy_type
+                proxy_type=proxy_type,
+                force_fetch=args.force_fetch
             )
 
             # Instantiate SignalGenerator
@@ -102,7 +108,8 @@ def main():
             backtest_engine = BacktestingEngine(
                 config=config,
                 data_fetcher=data_fetcher,
-                signal_generator=signal_generator
+                signal_generator=signal_generator,
+                force_fetch=args.force_fetch
             )
 
             # Run Backtest

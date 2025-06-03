@@ -2,12 +2,14 @@ import ccxt
 import pandas as pd
 import time
 from datetime import datetime
+import os
+import pickle
 
 class DataFetcher:
     """
     Handles fetching market data from an exchange using ccxt.
     """
-    def __init__(self, api_key=None, secret_key=None, password=None, exchange_id='okx', is_sandbox_mode=False, proxy_url=None, proxy_type=None):
+    def __init__(self, api_key=None, secret_key=None, password=None, exchange_id='okx', is_sandbox_mode=False, proxy_url=None, proxy_type=None, force_fetch=False):
         """
         Initializes the DataFetcher.
 
@@ -19,8 +21,10 @@ class DataFetcher:
             is_sandbox_mode (bool, optional): Whether to use the exchange's sandbox/testnet.
             proxy_url (str, optional): URL of the proxy server (e.g., 'http://user:pass@host:port', 'socks5h://user:pass@host:port').
             proxy_type (str, optional): Type of the proxy (e.g., 'http', 'socks5', 'socks5h'). Note: often part of proxy_url.
+            force_fetch (bool, optional): Whether to force fetching data even if cache exists. Defaults to False.
         """
         self.exchange_id = exchange_id
+        self.force_fetch = force_fetch
         try:
             exchange_class = getattr(ccxt, exchange_id)
         except AttributeError:
@@ -81,9 +85,11 @@ class DataFetcher:
             print(f"Error loading markets due to exchange issue: {e}. Some features might not work.")
 
 
-    def fetch_ohlcv(self, symbol, timeframe='1d', since=None, limit=None, params=None):
+    def fetch_ohlcv(self, symbol, timeframe='1d', since=None, limit=None, params=None, force_fetch=None):
         """
         Fetches historical OHLCV (K-line) data.
+
+        Supports caching of fetched data to speed up subsequent requests.
 
         If 'since' is provided, the function will attempt to fetch all available OHLCV data
         starting from the 'since' timestamp up to the most recent data, making multiple
@@ -106,6 +112,8 @@ class DataFetcher:
                                    If 'since' is None, this is the limit for recent data.
                                    Defaults to None (exchange default for recent, all for historical).
             params (dict, optional): Extra parameters to pass to the exchange API.
+            force_fetch (bool, optional): Overrides the instance's force_fetch setting for this specific call.
+                                         If None, uses the instance's `self.force_fetch` setting.
 
         Returns:
             pandas.DataFrame: A DataFrame with columns ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
@@ -116,6 +124,33 @@ class DataFetcher:
             print(f"Exchange {self.exchange_id} does not support fetching OHLCV data.")
             return None
 
+        # Determine effective force_fetch state
+        current_force_fetch = self.force_fetch if force_fetch is None else force_fetch
+
+        # Cache setup
+        since_str = str(since) if since is not None else "latest"
+        cache_filename_parts = [
+            self.exchange_id.lower(),
+            symbol.replace('/', '_').lower(),
+            timeframe,
+            since_str
+        ]
+        # Filter out None or empty strings just in case, though 'since_str' handles 'since=None'
+        cache_filename_parts = [part for part in cache_filename_parts if part]
+        cache_filename = "_".join(cache_filename_parts) + ".pkl"
+
+        cache_dir = ".cache"
+        cache_filepath = os.path.join(cache_dir, cache_filename)
+
+        if not current_force_fetch and os.path.exists(cache_filepath):
+            try:
+                with open(cache_filepath, 'rb') as f:
+                    print(f"Loading OHLCV data from cache: {cache_filepath}")
+                    return pickle.load(f)
+            except Exception as e:
+                print(f"Error loading data from cache {cache_filepath}: {e}. Fetching from exchange.")
+
+        # Proceed to fetch from exchange if not loaded from cache
         try:
             timeframe_duration_ms = self.exchange.parse_timeframe(timeframe) * 1000
             all_ohlcv_data = [] # Initialize here for broader scope
@@ -181,16 +216,26 @@ class DataFetcher:
             if not all_ohlcv_data:
                 # Updated message to be more generic
                 print(f"No OHLCV data returned for {symbol} with timeframe {timeframe}.")
-                return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            else:
+                df = pd.DataFrame(all_ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-            df = pd.DataFrame(all_ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                # Ensure final df respects limit if 'since' was None and limit was applied by ccxt directly
+                # This is mostly for safety, as ccxt should return 'limit' items.
+                # However, if 'since' was used, slicing is already done.
+                if since is None and limit is not None and len(df) > limit:
+                     df = df.head(limit)
 
-            # Ensure final df respects limit if 'since' was None and limit was applied by ccxt directly
-            # This is mostly for safety, as ccxt should return 'limit' items.
-            # However, if 'since' was used, slicing is already done.
-            if since is None and limit is not None and len(df) > limit:
-                 df = df.head(limit)
+            # Save to cache
+            try:
+                if not os.path.exists(cache_dir):
+                    os.makedirs(cache_dir, exist_ok=True)
+                with open(cache_filepath, 'wb') as f:
+                    pickle.dump(df, f)
+                    print(f"Saved OHLCV data to cache: {cache_filepath}")
+            except Exception as e:
+                print(f"Error saving data to cache {cache_filepath}: {e}")
 
             return df
 

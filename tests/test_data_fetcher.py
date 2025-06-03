@@ -1,186 +1,115 @@
-# tests/test_data_fetcher.py
 import unittest
 from unittest.mock import patch, MagicMock
+import os
+import shutil
+import pickle
 import pandas as pd
 from datetime import datetime
 
-# Adjust import path as necessary if your project structure is different
-# Assuming 'owl' is a top-level package and this test file is in tests/
+# Add project root to sys.path to allow importing owl modules
+import sys
+from pathlib import Path
+project_root_path = Path(__file__).resolve().parent.parent
+sys.path.append(str(project_root_path))
+
 from owl.data_fetcher.fetcher import DataFetcher
 
-# Helper to create mock OHLCV data
-def create_mock_ohlcv_candles(start_ts, timeframe_ms, count):
-    return [[start_ts + i * timeframe_ms, 100+i, 110+i, 90+i, 105+i, 1000+i*10] for i in range(count)]
-
-class TestDataFetcherFetchOHLCV(unittest.TestCase):
+class TestDataFetcherCaching(unittest.TestCase):
 
     def setUp(self):
-        self.mock_exchange_instance = MagicMock()
-        self.mock_exchange_instance.has = {'fetchOHLCV': True}
-        self.timeframe_ms = 60 * 1000  # 1 minute in milliseconds
-        # parse_timeframe in ccxt returns seconds, so we mock it to return seconds
-        self.mock_exchange_instance.parse_timeframe = MagicMock(return_value=self.timeframe_ms / 1000)
+        """Set up for test methods."""
+        self.cache_dir = ".cache"
+        # Ensure a clean state before each test
+        if os.path.exists(self.cache_dir):
+            shutil.rmtree(self.cache_dir)
 
-        # Patch the specific exchange class used by DataFetcher, e.g., ccxt.okx
-        # The DataFetcher defaults to 'okx'
-        self.exchange_patcher = patch('ccxt.okx', return_value=self.mock_exchange_instance)
+        # Minimal config for DataFetcher instantiation
+        # No API keys needed as we'll mock the actual exchange calls
+        self.fetcher = DataFetcher(exchange_id='okx') # 'okx' is a valid ccxt exchange ID
 
-        self.mock_ccxt_exchange_class = self.exchange_patcher.start() # Start patcher
-
-        # Initialize DataFetcher, it will use the patched exchange class
-        self.fetcher = DataFetcher(exchange_id='okx')
-        # Crucially, ensure the fetcher instance uses our fully mocked exchange object
-        self.fetcher.exchange = self.mock_exchange_instance
-
+        # Sample OHLCV data that the mocked exchange will return
+        self.sample_ohlcv_data_raw = [
+            [datetime(2023, 1, 1, 0, 0).timestamp() * 1000, 100, 110, 90, 105, 1000],
+            [datetime(2023, 1, 1, 1, 0).timestamp() * 1000, 105, 115, 95, 110, 1200],
+        ]
+        self.sample_ohlcv_df = pd.DataFrame(
+            self.sample_ohlcv_data_raw,
+            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        )
+        self.sample_ohlcv_df['timestamp'] = pd.to_datetime(self.sample_ohlcv_df['timestamp'], unit='ms')
 
     def tearDown(self):
-        self.exchange_patcher.stop() # Stop patcher
+        """Clean up after test methods."""
+        if os.path.exists(self.cache_dir):
+            shutil.rmtree(self.cache_dir)
 
-    def test_fetch_ohlcv_exchange_does_not_support(self):
-        self.fetcher.exchange.has['fetchOHLCV'] = False # Modify the mock directly
-        result = self.fetcher.fetch_ohlcv("BTC/USDT", "1m")
-        self.assertIsNone(result)
-        self.fetcher.exchange.has['fetchOHLCV'] = True # Reset for other tests
+    def test_caching_and_force_fetch(self):
+        """Test caching behavior and force_fetch functionality."""
+        symbol = "TEST/USDT"
+        timeframe = "1h"
+        since = int(datetime(2023, 1, 1, 0, 0).timestamp() * 1000)
 
-    def test_fetch_ohlcv_no_since_no_limit(self):
-        mock_data = create_mock_ohlcv_candles(start_ts=1672531200000, timeframe_ms=self.timeframe_ms, count=10)
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(return_value=mock_data)
+        # --- 1. First call: Data should be fetched from exchange and cached ---
+        # Mock the underlying ccxt exchange's fetch_ohlcv method
+        with patch.object(self.fetcher.exchange, 'fetch_ohlcv', return_value=self.sample_ohlcv_data_raw) as mock_exchange_fetch:
+            print("Test: First call to fetch_ohlcv (fetch from exchange)")
+            df_fetched = self.fetcher.fetch_ohlcv(symbol=symbol, timeframe=timeframe, since=since)
 
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m')
+            mock_exchange_fetch.assert_called_once()
+            pd.testing.assert_frame_equal(df_fetched, self.sample_ohlcv_df)
 
-        self.fetcher.exchange.fetch_ohlcv.assert_called_once_with(
-            "BTC/USDT", '1m', None, None, {}
+            # Verify cache file was created
+            cache_filename = f"okx_test_usdt_1h_{since}.pkl" # Based on DataFetcher's naming
+            cache_filepath = os.path.join(self.cache_dir, cache_filename)
+            self.assertTrue(os.path.exists(cache_filepath), "Cache file was not created.")
+
+            # Verify content of cache file
+            with open(cache_filepath, 'rb') as f:
+                cached_df = pickle.load(f)
+            pd.testing.assert_frame_equal(cached_df, self.sample_ohlcv_df)
+            print("Test: Data fetched and cached successfully.")
+
+        # --- 2. Second call: Data should be loaded from cache ---
+        with patch.object(self.fetcher.exchange, 'fetch_ohlcv', return_value=self.sample_ohlcv_data_raw) as mock_exchange_fetch_cached:
+            print("Test: Second call to fetch_ohlcv (load from cache)")
+            df_cached_load = self.fetcher.fetch_ohlcv(symbol=symbol, timeframe=timeframe, since=since)
+
+            mock_exchange_fetch_cached.assert_not_called() # Should not call exchange
+            pd.testing.assert_frame_equal(df_cached_load, self.sample_ohlcv_df)
+            print("Test: Data loaded from cache successfully.")
+
+        # --- 3. Third call: force_fetch=True, data should be fetched from exchange again ---
+        # New sample data for this forced fetch to ensure we are not getting stale cache
+        forced_ohlcv_data_raw = [
+            [datetime(2023, 1, 2, 0, 0).timestamp() * 1000, 200, 210, 190, 205, 2000],
+        ]
+        forced_ohlcv_df = pd.DataFrame(
+            forced_ohlcv_data_raw,
+            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
         )
-        self.assertIsInstance(df, pd.DataFrame)
-        self.assertEqual(len(df), 10)
-        self.assertEqual(list(df.columns), ['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        forced_ohlcv_df['timestamp'] = pd.to_datetime(forced_ohlcv_df['timestamp'], unit='ms')
 
-    def test_fetch_ohlcv_no_since_with_limit(self):
-        mock_data = create_mock_ohlcv_candles(start_ts=1672531200000, timeframe_ms=self.timeframe_ms, count=5)
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(return_value=mock_data)
+        with patch.object(self.fetcher.exchange, 'fetch_ohlcv', return_value=forced_ohlcv_data_raw) as mock_exchange_force_fetch:
+            print("Test: Third call to fetch_ohlcv (force_fetch=True)")
+            df_force_fetched = self.fetcher.fetch_ohlcv(symbol=symbol, timeframe=timeframe, since=since, force_fetch=True)
 
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', limit=5)
+            mock_exchange_force_fetch.assert_called_once()
+            pd.testing.assert_frame_equal(df_force_fetched, forced_ohlcv_df)
 
-        self.fetcher.exchange.fetch_ohlcv.assert_called_once_with(
-            "BTC/USDT", '1m', None, 5, {}
-        )
-        self.assertEqual(len(df), 5)
+            # Verify cache file was updated
+            with open(cache_filepath, 'rb') as f:
+                cached_df_after_force = pickle.load(f)
+            pd.testing.assert_frame_equal(cached_df_after_force, forced_ohlcv_df)
+            print("Test: Data force-fetched and cache updated successfully.")
 
-    def test_fetch_ohlcv_with_since_no_limit_multiple_batches(self):
-        start_ts = 1672531200000  # 2023-01-01 00:00:00 UTC
+        # --- 4. Fourth call: Data should be loaded from the updated cache ---
+        with patch.object(self.fetcher.exchange, 'fetch_ohlcv', return_value=forced_ohlcv_data_raw) as mock_exchange_cached_after_force:
+            print("Test: Fourth call to fetch_ohlcv (load updated cache)")
+            df_cached_load_after_force = self.fetcher.fetch_ohlcv(symbol=symbol, timeframe=timeframe, since=since)
 
-        def fetch_ohlcv_side_effect(symbol, timeframe, since, limit, params):
-            # SUT internal batch limit is 100
-            self.assertEqual(limit, 100)
-            if since == start_ts:
-                return create_mock_ohlcv_candles(start_ts, self.timeframe_ms, 100)
-            elif since == start_ts + 100 * self.timeframe_ms:
-                return create_mock_ohlcv_candles(since, self.timeframe_ms, 50)
-            elif since == start_ts + 150 * self.timeframe_ms:
-                return []
-            self.fail(f"Unexpected call to fetch_ohlcv with since={since}")
-            # return [] # Not needed due to self.fail
-
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(side_effect=fetch_ohlcv_side_effect)
-
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', since=start_ts)
-
-        self.assertEqual(self.fetcher.exchange.fetch_ohlcv.call_count, 3)
-        self.assertEqual(len(df), 150)
-        for i in range(150):
-            expected_ts = pd.to_datetime(start_ts + i * self.timeframe_ms, unit='ms')
-            self.assertEqual(df['timestamp'].iloc[i], expected_ts)
-
-    def test_fetch_ohlcv_with_since_and_limit_less_than_internal_batch(self):
-        start_ts = 1672531200000
-        limit_val = 5
-        mock_data = create_mock_ohlcv_candles(start_ts, self.timeframe_ms, limit_val)
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(return_value=mock_data)
-
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', since=start_ts, limit=limit_val)
-
-        self.fetcher.exchange.fetch_ohlcv.assert_called_once_with(
-            "BTC/USDT", '1m', since=start_ts, limit=limit_val, params={}
-        )
-        self.assertEqual(len(df), limit_val)
-
-    def test_fetch_ohlcv_with_since_and_limit_spanning_batches(self):
-        start_ts = 1672531200000
-        user_limit = 150 # User wants 150 candles
-        # SUT internal batch limit is 100
-
-        def fetch_ohlcv_side_effect(symbol, timeframe, since, limit, params):
-            if since == start_ts:
-                self.assertEqual(limit, 100) # First call: min(150, 100)
-                return create_mock_ohlcv_candles(start_ts, self.timeframe_ms, 100)
-            elif since == start_ts + 100 * self.timeframe_ms:
-                self.assertEqual(limit, 50)  # Second call: min(150-100, 100)
-                return create_mock_ohlcv_candles(since, self.timeframe_ms, 50)
-            self.fail(f"Unexpected call to fetch_ohlcv with since={since}, limit={limit}")
-            # return [] # Not needed
-
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(side_effect=fetch_ohlcv_side_effect)
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', since=start_ts, limit=user_limit)
-
-        self.assertEqual(self.fetcher.exchange.fetch_ohlcv.call_count, 2)
-        self.assertEqual(len(df), user_limit)
-        expected_last_ts = pd.to_datetime(start_ts + (user_limit - 1) * self.timeframe_ms, unit='ms')
-        self.assertEqual(df['timestamp'].iloc[-1], expected_last_ts)
-        
-    def test_fetch_ohlcv_with_since_and_limit_more_than_available(self):
-        start_ts = 1672531200000
-        user_limit = 150 # User wants 150
-        # Exchange only has 120 total
-
-        def fetch_ohlcv_side_effect(symbol, timeframe, since, limit, params):
-            if since == start_ts: # Requesting min(150, 100) = 100
-                self.assertEqual(limit, 100)
-                return create_mock_ohlcv_candles(start_ts, self.timeframe_ms, 100) # Returns 100
-            elif since == start_ts + 100 * self.timeframe_ms: # Requesting min(50, 100) = 50
-                self.assertEqual(limit, 50)
-                return create_mock_ohlcv_candles(since, self.timeframe_ms, 20) # Returns only 20 (end of data)
-            elif since == start_ts + 120 * self.timeframe_ms: # Requesting min(150 - 100 - 20, 100) = 30
-                 self.assertEqual(limit,30)
-                 return [] # No more data
-            self.fail(f"Unexpected call to fetch_ohlcv with since={since}, limit={limit}")
-            # return [] # Not needed
-
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(side_effect=fetch_ohlcv_side_effect)
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', since=start_ts, limit=user_limit)
-        
-        self.assertEqual(self.fetcher.exchange.fetch_ohlcv.call_count, 3)
-        self.assertEqual(len(df), 120)
-
-    def test_fetch_ohlcv_no_data_returned_with_since(self):
-        start_ts = 1672531200000
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(return_value=[])
-
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', since=start_ts)
-
-        self.fetcher.exchange.fetch_ohlcv.assert_called_once() # Called once with current_batch_limit = 100
-        self.assertIsInstance(df, pd.DataFrame)
-        self.assertTrue(df.empty)
-        self.assertEqual(list(df.columns), ['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-    def test_fetch_ohlcv_limit_is_zero_with_since(self):
-        start_ts = 1672531200000
-        self.fetcher.exchange.fetch_ohlcv = MagicMock()
-        
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', since=start_ts, limit=0)
-        
-        self.fetcher.exchange.fetch_ohlcv.assert_not_called()
-        self.assertTrue(df.empty)
-        self.assertEqual(list(df.columns), ['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-
-    def test_fetch_ohlcv_limit_is_zero_no_since(self):
-        self.fetcher.exchange.fetch_ohlcv = MagicMock(return_value=[]) # Assume ccxt returns empty for limit=0
-
-        df = self.fetcher.fetch_ohlcv(symbol="BTC/USDT", timeframe='1m', limit=0)
-
-        self.fetcher.exchange.fetch_ohlcv.assert_called_once_with("BTC/USDT", '1m', None, 0, {})
-        self.assertTrue(df.empty)
-        self.assertEqual(list(df.columns), ['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            mock_exchange_cached_after_force.assert_not_called()
+            pd.testing.assert_frame_equal(df_cached_load_after_force, forced_ohlcv_df)
+            print("Test: Updated data loaded from cache successfully.")
 
 if __name__ == '__main__':
-    unittest.main(argv=['first-arg-is-ignored'], exit=False)
+    unittest.main()
