@@ -114,8 +114,8 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         # Ensure data is sorted by timestamp if any manual additions happened out of order
         self.sample_hourly_ohlcv_data = self.sample_hourly_ohlcv_data.sort_values('timestamp').reset_index(drop=True)
 
-        def mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
-            # print(f"Mock fetch_ohlcv called with: timeframe={timeframe}, since={since}") # For debugging tests
+        def mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
+            # print(f"Mock fetch_ohlcv called with: timeframe={timeframe}, since={since}, force_fetch={force_fetch}") # For debugging tests
             if timeframe == '1d':
                 # Filter daily data by since, similar to how engine might if 'since' was for daily
                 daily_data_copy = self.sample_daily_ohlcv_data.copy()
@@ -243,10 +243,11 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
 
         # Configure to BUY on the first possible signal (2023-01-02)
         # n_day_high_period = 1, so index 1 (2023-01-02) is first possible buy day
-        first_buy_trigger_daily_ts = self.sample_daily_ohlcv_data['timestamp'][1] # 2023-01-02 00:00:00 UTC
+        first_buy_trigger_daily_ts = self.sample_daily_ohlcv_data['timestamp'][1] # 2023-01-02 00:00:00 UTC, this is already tz-aware
 
         # Signal generator expects datetime in Asia/Shanghai for its window check
-        first_buy_trigger_dt_utc8 = first_buy_trigger_daily_ts.replace(hour=10).tz_localize('UTC').tz_convert('Asia/Shanghai')
+        # Since first_buy_trigger_daily_ts is already UTC, directly convert after replacing hour.
+        first_buy_trigger_dt_utc8 = first_buy_trigger_daily_ts.replace(hour=10).tz_convert('Asia/Shanghai')
 
 
         def breakout_side_effect(*args, **kwargs):
@@ -365,7 +366,7 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
 
         # Mock DataFetcher to use this modified daily data
         original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
-        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
             if timeframe == '1d':
                 data_to_return = temp_daily_data.copy()
             elif timeframe == '1h':
@@ -450,7 +451,7 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         temp_daily_data.loc[temp_daily_data['timestamp'] == pd.Timestamp('2023-01-03', tz='UTC'), 'timestamp'] = sell_check_daily_ts_utc
 
         original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
-        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
             # (Same as in test_sell_triggered_within_window_uses_hourly_price)
             if timeframe == '1d': data_to_return = temp_daily_data.copy()
             elif timeframe == '1h': data_to_return = self.sample_hourly_ohlcv_data.copy()
@@ -502,7 +503,7 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         temp_daily_data.loc[temp_daily_data['timestamp'] == pd.Timestamp('2023-01-03', tz='UTC'), 'timestamp'] = sell_check_daily_ts_utc
 
         original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
-        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
             if timeframe == '1d': data_to_return = temp_daily_data.copy()
             elif timeframe == '1h': data_to_return = self.sample_hourly_ohlcv_data.copy()
             else: return pd.DataFrame()
@@ -567,7 +568,7 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         ]
 
         original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
-        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
             if timeframe == '1d': data_to_return = temp_daily_data.copy()
             elif timeframe == '1h': data_to_return = temp_hourly_data.copy() # Use modified hourly
             else: return pd.DataFrame()
@@ -652,7 +653,7 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
             temp_hourly_data = pd.concat([temp_hourly_data, new_row]).sort_values(by='timestamp').reset_index(drop=True)
 
         original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
-        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
             if timeframe == '1d': data_to_return = temp_daily_data.copy()
             elif timeframe == '1h': data_to_return = temp_hourly_data.copy() # Use modified hourly
             else: return pd.DataFrame()
@@ -722,7 +723,7 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
             temp_hourly_data = pd.concat([temp_hourly_data, new_fallback_row]).sort_values('timestamp').reset_index(drop=True)
 
         # Update DataFetcher mock to use this temporary hourly data
-        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
             if timeframe == '1d':
                 daily_data_copy = self.sample_daily_ohlcv_data.copy()
                 if since is not None:
@@ -798,7 +799,7 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         ]
 
         # Update DataFetcher mock to use this temporary hourly data for this test only
-        def temp_fetch_ohlcv_for_daily_fallback(symbol, timeframe, since, limit=None, params=None):
+        def temp_fetch_ohlcv_for_daily_fallback(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
             if timeframe == '1d':
                 daily_data_copy = self.sample_daily_ohlcv_data.copy()
                 if since is not None:
@@ -937,6 +938,75 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
             self.sample_daily_ohlcv_data['timestamp'] == expected_sell_order_daily_ts
         ]['close'].iloc[0] # Should be 122
         self.assertEqual(sell_kwargs['price'], expected_daily_fallback_price, "SELL order price should be the daily close price due to fallback")
+
+    @patch('owl.backtesting_engine.engine.plot_equity_curve')
+    @patch(PATCH_PATH_SG) # Patch SignalGenerator as it's instantiated by the engine
+    def test_plot_filename_is_dynamic(self, MockSignalGenerator, mock_plot_equity_curve):
+        """
+        Tests that the equity curve plot filename is dynamically generated
+        based on start_date and end_date from the configuration.
+        """
+        mock_sg_instance = MockSignalGenerator.return_value # Get the instance of the mocked SignalGenerator
+        mock_sg_instance.check_breakout_signal.return_value = None # Ensure no trades for simplicity
+
+        test_start_date = '2023-02-01'
+        test_end_date = '2023-02-03'
+        expected_filename = f"backtest_equity_curve_{test_start_date.replace('-', '')}_{test_end_date.replace('-', '')}.png"
+
+        # Use a copy of the sample config and update dates
+        test_config = {key: value.copy() if isinstance(value, dict) else value for key, value in self.sample_config.items()}
+        test_config['backtesting']['start_date'] = test_start_date
+        test_config['backtesting']['end_date'] = test_end_date
+        # Ensure some data is processed to generate portfolio_history
+        test_config['backtesting']['timeframe'] = '1d' # Use daily to simplify data needs
+        test_config['strategy']['n_day_high_period'] = 1 # Allow processing from early on
+
+        # Ensure data_fetcher returns some minimal data for both daily and hourly calls
+        # The engine requires portfolio_history to attempt plotting.
+        # _update_portfolio_value needs 'close' and 'timestamp'.
+        minimal_daily_data = pd.DataFrame({
+            'timestamp': pd.to_datetime([f'{test_start_date}T00:00:00Z', f'{test_start_date}T01:00:00Z']), # Two points for history
+            'open': [100, 101], 'high': [105, 106], 'low': [95, 96], 'close': [102, 103], 'volume': [1000, 1000]
+        })
+        minimal_hourly_data = pd.DataFrame({
+            'timestamp': pd.to_datetime([f'{test_start_date}T00:00:00Z', f'{test_start_date}T01:00:00Z']),
+            'open': [100, 101], 'high': [105, 106], 'low': [95, 96], 'close': [102, 103], 'volume': [1000, 1000]
+        })
+
+        original_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
+        def mock_fetch_minimal_data(symbol, timeframe, since, limit=None, params=None, force_fetch=None): # Added force_fetch
+            if timeframe == '1d':
+                return minimal_daily_data.copy()
+            elif timeframe == '1h':
+                return minimal_hourly_data.copy()
+            return pd.DataFrame()
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = mock_fetch_minimal_data
+
+        mock_plot_equity_curve.return_value = True # Simulate successful plotting
+
+        engine = BacktestingEngine(
+            config=test_config,
+            data_fetcher=self.mock_data_fetcher,
+            signal_generator=None # Engine creates its own, which is mocked by PATCH_PATH_SG
+        )
+        engine.run_backtest()
+
+        # Restore original side effect
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = original_side_effect
+
+        mock_plot_equity_curve.assert_called_once()
+
+        # Inspect the call arguments. Call object is mock_plot_equity_curve.call_args
+        # It's a tuple (args, kwargs). We are interested in kwargs['output_path']
+        # or if output_path is a positional argument, then args[1] (assuming args[0] is portfolio_history_df)
+
+        # Check plotter call signature: plot_equity_curve(portfolio_history_df, output_path)
+        # The call in engine.py is plot_equity_curve(portfolio_history_df=portfolio_df, output_path=plot_output_filename)
+        # So we need to check kwargs.
+        args_call, kwargs_call = mock_plot_equity_curve.call_args
+        called_output_path = kwargs_call['output_path']
+
+        self.assertEqual(called_output_path, expected_filename)
 
 
 if __name__ == '__main__':

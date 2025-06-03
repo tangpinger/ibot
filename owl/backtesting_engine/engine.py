@@ -565,16 +565,36 @@ class BacktestingEngine:
             try:
                 portfolio_df['timestamp'] = pd.to_datetime(portfolio_df['timestamp'])
 
-                plot_output_path = "backtest_equity_curve.png"
-                # In a more advanced setup, output_path could be derived from config or include a timestamp
+                # Generate dynamic plot filename
+                bt_config_for_plot = self.config.get('backtesting', {})
+                start_date_str_plot = bt_config_for_plot.get('start_date', 'unknownstart')
+                end_date_str_plot = bt_config_for_plot.get('end_date', 'unknownend')
+
+                start_time_str_fn = "unknownstart"
+                end_time_str_fn = "unknownend"
+
+                try:
+                    start_date_dt = datetime.strptime(start_date_str_plot, "%Y-%m-%d")
+                    start_time_str_fn = start_date_dt.strftime('%Y%m%d')
+                except ValueError:
+                    print(f"Warning: Could not parse start_date '{start_date_str_plot}' for plot filename. Using default.")
+
+                try:
+                    end_date_dt = datetime.strptime(end_date_str_plot, "%Y-%m-%d")
+                    end_time_str_fn = end_date_dt.strftime('%Y%m%d')
+                except ValueError:
+                    print(f"Warning: Could not parse end_date '{end_date_str_plot}' for plot filename. Using default.")
+
+                plot_output_filename = f"backtest_equity_curve_{start_time_str_fn}_{end_time_str_fn}.png"
+                print(f"Generated plot filename: {plot_output_filename}")
 
                 plot_success = plot_equity_curve(
                     portfolio_history_df=portfolio_df,
-                    output_path=plot_output_path
+                    output_path=plot_output_filename
                 )
                 # plot_equity_curve function already prints success or error messages
                 if plot_success:
-                    print(f"Equity curve generation process completed. Check {plot_output_path}")
+                    print(f"Equity curve generation process completed. Check {plot_output_filename}")
                 else:
                     print("Equity curve generation process encountered an issue (see plotter errors above).")
 
