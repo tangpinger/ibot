@@ -68,7 +68,8 @@ class BacktestingEngine:
         self.portfolio['total_value'] = self.portfolio['cash'] + self.portfolio['asset_value']
         self.portfolio_history.append({
             'timestamp': timestamp,
-            'total_value': self.portfolio['total_value']
+            'total_value': self.portfolio['total_value'],
+            'price': current_price  # Add this line
         })
 
     def _simulate_order(self, timestamp, order_type, symbol, price, quantity):

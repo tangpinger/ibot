@@ -8,8 +8,9 @@ def plot_equity_curve(portfolio_history_df, output_path="equity_curve.png"):
     Generates and saves an equity curve plot from portfolio history.
 
     Args:
-        portfolio_history_df (pd.DataFrame): DataFrame with 'timestamp' and 'total_value' columns.
+        portfolio_history_df (pd.DataFrame): DataFrame with 'timestamp', 'total_value', and 'price' columns.
                                              'timestamp' should be datetime-like.
+                                             'price' represents the price of the symbol at the given timestamp.
         output_path (str, optional): The path to save the plot image. Defaults to "equity_curve.png".
 
     Returns:
@@ -22,11 +23,15 @@ def plot_equity_curve(portfolio_history_df, output_path="equity_curve.png"):
     if portfolio_history_df.empty:
         print("Error: portfolio_history_df is empty. Cannot generate plot.")
         return False
-    if 'timestamp' not in portfolio_history_df.columns or 'total_value' not in portfolio_history_df.columns:
-        print("Error: portfolio_history_df must contain 'timestamp' and 'total_value' columns.")
-        return False
-    if portfolio_history_df['timestamp'].isnull().any() or portfolio_history_df['total_value'].isnull().any():
-        print("Error: 'timestamp' or 'total_value' columns contain NaN values.")
+    required_columns = ['timestamp', 'total_value', 'price']
+    for col in required_columns:
+        if col not in portfolio_history_df.columns:
+            print(f"Error: portfolio_history_df must contain '{col}' column.")
+            return False
+    if portfolio_history_df['timestamp'].isnull().any() or \
+       portfolio_history_df['total_value'].isnull().any() or \
+       portfolio_history_df['price'].isnull().any():
+        print("Error: 'timestamp', 'total_value', or 'price' columns contain NaN values.")
         return False
 
     try:
@@ -36,25 +41,39 @@ def plot_equity_curve(portfolio_history_df, output_path="equity_curve.png"):
         df_to_plot['timestamp'] = pd.to_datetime(df_to_plot['timestamp'])
         df_to_plot = df_to_plot.sort_values(by='timestamp')
 
+        fig, ax1 = plt.subplots(figsize=(12, 6))
 
-        plt.figure(figsize=(12, 6))
-        plt.plot(df_to_plot['timestamp'], df_to_plot['total_value'], label='Portfolio Value', color='blue')
+        # Plot Portfolio Value on primary y-axis
+        color = 'tab:blue'
+        ax1.set_xlabel('Time', fontsize=12)
+        ax1.set_ylabel('Portfolio Value', color=color, fontsize=12)
+        ax1.plot(df_to_plot['timestamp'], df_to_plot['total_value'], label='Portfolio Value', color=color)
+        ax1.tick_params(axis='y', labelcolor=color)
+        ax1.grid(True, linestyle='--', alpha=0.7) # Apply grid to primary axis
 
-        plt.title('Equity Curve', fontsize=16)
-        plt.xlabel('Time', fontsize=12)
-        plt.ylabel('Portfolio Value', fontsize=12)
+        # Create secondary y-axis for Symbol Price
+        ax2 = ax1.twinx()
+        color = 'tab:red'
+        ax2.set_ylabel('Symbol Price', color=color, fontsize=12)  # we already handled the x-label with ax1
+        ax2.plot(df_to_plot['timestamp'], df_to_plot['price'], label='Symbol Price', color=color)
+        ax2.tick_params(axis='y', labelcolor=color)
 
-        plt.legend(fontsize=10)
-        plt.grid(True, linestyle='--', alpha=0.7)
+        # Title
+        plt.title('Equity Curve and Symbol Price', fontsize=16)
 
-        # Improve date formatting on x-axis if timestamps are datetime objects
+        # Combined legend
+        lines, labels = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(lines + lines2, labels + labels2, loc='upper left', fontsize=10)
+
+        # Improve date formatting on x-axis
         if pd.api.types.is_datetime64_any_dtype(df_to_plot['timestamp']):
-            plt.gca().xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%Y-%m-%d %H:%M'))
-            plt.gcf().autofmt_xdate() # Auto formats the x-axis labels (like rotation)
+            ax1.xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%Y-%m-%d %H:%M'))
+            fig.autofmt_xdate() # Auto formats the x-axis labels (like rotation)
         else:
             plt.xticks(rotation=45) # Fallback rotation if not datetime
 
-        plt.tight_layout() # Adjust layout to prevent labels from overlapping
+        fig.tight_layout()  # Adjust layout to prevent labels from overlapping
 
         # Save Plot
         plt.savefig(output_path)
@@ -73,50 +92,50 @@ def plot_equity_curve(portfolio_history_df, output_path="equity_curve.png"):
 if __name__ == '__main__':
     # Create dummy data for testing plotter.py directly
     dummy_history = [
-        {'timestamp': pd.to_datetime('2023-01-01 10:00:00'), 'total_value': 10000},
-        {'timestamp': pd.to_datetime('2023-01-02 10:00:00'), 'total_value': 10100},
-        {'timestamp': pd.to_datetime('2023-01-03 10:00:00'), 'total_value': 10050},
-        {'timestamp': pd.to_datetime('2023-01-04 10:00:00'), 'total_value': 10200},
-        {'timestamp': pd.to_datetime('2023-01-05 10:00:00'), 'total_value': 10150},
+        {'timestamp': pd.to_datetime('2023-01-01 10:00:00'), 'total_value': 10000, 'price': 100.0},
+        {'timestamp': pd.to_datetime('2023-01-02 10:00:00'), 'total_value': 10100, 'price': 101.0},
+        {'timestamp': pd.to_datetime('2023-01-03 10:00:00'), 'total_value': 10050, 'price': 100.5},
+        {'timestamp': pd.to_datetime('2023-01-04 10:00:00'), 'total_value': 10200, 'price': 102.0},
+        {'timestamp': pd.to_datetime('2023-01-05 10:00:00'), 'total_value': 10150, 'price': 101.5},
     ]
     dummy_df = pd.DataFrame(dummy_history)
     # Ensure timestamp is datetime (already done in dummy_history but good practice for real data)
     dummy_df['timestamp'] = pd.to_datetime(dummy_df['timestamp'])
 
     print("Testing plot_equity_curve with valid data...")
-    success = plot_equity_curve(dummy_df, output_path="test_equity_curve.png")
+    success = plot_equity_curve(dummy_df, output_path="test_equity_curve_with_price.png")
     if success:
-        print("Test plot generated successfully: test_equity_curve.png")
+        print("Test plot generated successfully: test_equity_curve_with_price.png")
     else:
         print("Test plot generation failed for valid data.")
 
     # Test with empty DataFrame
     print("\nTesting with empty DataFrame...")
-    empty_df = pd.DataFrame(columns=['timestamp', 'total_value'])
-    success_empty = plot_equity_curve(empty_df, output_path="test_empty_equity_curve.png")
+    empty_df = pd.DataFrame(columns=['timestamp', 'total_value', 'price'])
+    success_empty = plot_equity_curve(empty_df, output_path="test_empty_equity_curve_with_price.png")
     if not success_empty:
         print("Correctly handled empty DataFrame scenario (no plot generated).")
     else:
         print("Failed to handle empty DataFrame scenario correctly (plot might have been attempted or saved).")
 
     # Test with missing columns
-    print("\nTesting with DataFrame missing 'total_value' column...")
-    missing_col_df = pd.DataFrame({'timestamp': [pd.to_datetime('2023-01-01')]})
-    success_missing = plot_equity_curve(missing_col_df, output_path="test_missing_col_equity_curve.png")
+    print("\nTesting with DataFrame missing 'price' column...")
+    missing_col_df = pd.DataFrame({'timestamp': [pd.to_datetime('2023-01-01')], 'total_value': [1000]})
+    success_missing = plot_equity_curve(missing_col_df, output_path="test_missing_price_col_equity_curve.png")
     if not success_missing:
         print("Correctly handled missing column scenario (no plot generated).")
     else:
         print("Failed to handle missing column scenario correctly.")
 
     # Test with NaN values
-    print("\nTesting with DataFrame containing NaN values...")
+    print("\nTesting with DataFrame containing NaN values in 'price' column...")
     nan_history = [
-        {'timestamp': pd.to_datetime('2023-01-01'), 'total_value': 10000},
-        {'timestamp': None, 'total_value': 10100}, # NaN timestamp
-        {'timestamp': pd.to_datetime('2023-01-03'), 'total_value': None}, # NaN value
+        {'timestamp': pd.to_datetime('2023-01-01'), 'total_value': 10000, 'price': 100.0},
+        {'timestamp': pd.to_datetime('2023-01-02'), 'total_value': 10100, 'price': None}, # NaN price
+        {'timestamp': pd.to_datetime('2023-01-03'), 'total_value': 10050, 'price': 100.5},
     ]
     nan_df = pd.DataFrame(nan_history)
-    success_nan = plot_equity_curve(nan_df, output_path="test_nan_equity_curve.png")
+    success_nan = plot_equity_curve(nan_df, output_path="test_nan_price_equity_curve.png")
     if not success_nan:
         print("Correctly handled NaN values scenario (no plot generated).")
     else:
@@ -133,8 +152,14 @@ if __name__ == '__main__':
     # Test output path that might be problematic (e.g. non-existent dir - though savefig might create it)
     # For now, this is a simple path test. More complex path tests would involve mocking os functions.
     print("\nTesting with a specific output path...")
-    specific_path = "temp_plot_output.jpg" # Test with a different extension
-    success_path = plot_equity_curve(dummy_df, output_path=specific_path)
+    # Create a new dummy_df for this test, as the previous one might be modified by other tests if not careful
+    # (though in this script, functions receive copies or new DataFrames, so it should be fine)
+    dummy_df_for_path_test = pd.DataFrame([
+        {'timestamp': pd.to_datetime('2023-01-01 10:00:00'), 'total_value': 10000, 'price': 100.0},
+        {'timestamp': pd.to_datetime('2023-01-02 10:00:00'), 'total_value': 10100, 'price': 101.0}
+    ])
+    specific_path = "temp_plot_output_with_price.jpg" # Test with a different extension
+    success_path = plot_equity_curve(dummy_df_for_path_test, output_path=specific_path)
     if success_path:
         print(f"Test plot generated successfully: {specific_path}")
         # Optional: check if file exists, then clean up
