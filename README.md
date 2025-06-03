@@ -39,6 +39,13 @@ Trading cryptocurrencies involves significant risk. This bot is provided for edu
     Edit \`config.toml\` with your OKX API keys (if not in dry-run), trading parameters, and other settings.
     **IMPORTANT: Ensure your API keys have the necessary permissions for trading if you intend to run in live mode.**
 
+    **Proxy Configuration:**
+    The `DataFetcher` module supports connecting to exchanges via a proxy. This is useful for users in restricted network environments or those who wish to route their traffic through specific IP addresses.
+    - Supported proxy types include SOCKS5, SOCKS5h, HTTP, and others supported by the underlying `requests` and `aiohttp` libraries via the URL scheme.
+    - To configure a proxy, edit the `[proxy]` section in your `config.toml` file. Refer to `config.example.toml` for examples.
+    - The `proxy_url` should be in a format like `socks5h://user:pass@your_proxy_host:port` (for SOCKS5h with authentication) or `http://your_proxy_host:port`.
+    - The `proxy_type` can also be specified, but often the URL scheme (e.g., `socks5h://`) is sufficient.
+
 ## Usage (Planned)
 
 **Dry-Run Mode:**
@@ -46,8 +53,24 @@ Trading cryptocurrencies involves significant risk. This bot is provided for edu
 poetry run python owl/main.py
 \`\`\`
 
-**Backtesting:**
-(Command to be defined)
+## Running a Backtest
+
+To run a backtest simulation of the trading strategy using historical data:
+
+1.  **Ensure Configuration is Ready:**
+    Make sure your `config.toml` file is correctly set up, especially the `[backtesting]` section with parameters like `symbol`, `timeframe`, `start_date`, `end_date`, and `initial_capital`. API keys are generally not required for backtesting public data, but ensure `exchange_id` and any `proxy_settings` are correct if needed.
+
+2.  **Run the Backtest Command:**
+    Execute the following command from the project's root directory:
+    \`\`\`bash
+    python owl/main.py --mode backtest
+    \`\`\`
+    Or, if you are using Poetry for environment management:
+    \`\`\`bash
+    poetry run python owl/main.py --mode backtest
+    \`\`\`
+
+The backtesting engine will then simulate the strategy based on your configuration and output the results.
 
 ## Modules
 

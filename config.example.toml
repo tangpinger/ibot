@@ -44,3 +44,12 @@ commission_rate = 0.001 # 0.1% per trade (example for OKX taker fee)
 # For now, keeping one main 'symbol' in [backtesting] for clarity in the engine.
 # The signal generator itself is agnostic to the symbol string, it just processes data.
 # The engine provides the symbol to the data_fetcher and order simulator.
+
+# [proxy]
+# Optional proxy settings for data fetching and exchange communication.
+# proxy_url = "socks5h://user:password@your_proxy_host:port"  # Example for SOCKS5h with authentication
+# proxy_url = "socks5h://your_proxy_host:port"               # Example for SOCKS5h without authentication
+# proxy_type = "socks5h"  # Type of the proxy (e.g., socks5, socks5h, http).
+                          # Note: proxy_type in the URL scheme (e.g. socks5h://) is usually sufficient for ccxt.
+                          # This explicit 'proxy_type' parameter is available if needed by DataFetcher's logic,
+                          # but the primary configuration is via proxy_url.

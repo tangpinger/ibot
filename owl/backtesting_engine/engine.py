@@ -26,8 +26,6 @@ class BacktestingEngine:
         """
         self.config = config
         self.data_fetcher = data_fetcher
-        self.config = config
-        self.data_fetcher = data_fetcher
         self.signal_generator = signal_generator
 
         # Portfolio and trade logging - Critical backtesting parameters
@@ -267,20 +265,21 @@ class BacktestingEngine:
 
                 except Exception as e:
                     print(f"Error converting timestamp {current_timestamp_utc} to UTC+8: {e}")
-                    # Update portfolio and skip this iteration if timestamp conversion fails
-            self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc) # use current_close_price
-                    continue
+                    current_datetime_utc8 = None # Mark as unavailable for signal generation
 
                 # Generate Signal
-                try:
-                    signal = self.signal_generator.check_breakout_signal(
-                        daily_ohlcv_data=historical_data_for_signal,
-                        current_day_high=current_day_high,
-                        current_datetime_utc8=current_datetime_utc8
-                    )
-                except Exception as e:
-                    print(f"Error during signal generation at {current_timestamp_utc}: {e}")
-                    signal = None # Ensure signal is None on error
+                if current_datetime_utc8: # Proceed only if timestamp conversion was successful
+                    try:
+                        signal = self.signal_generator.check_breakout_signal(
+                            daily_ohlcv_data=historical_data_for_signal,
+                            current_day_high=current_day_high,
+                            current_datetime_utc8=current_datetime_utc8
+                        )
+                    except Exception as e:
+                        print(f"Error during signal generation at {current_timestamp_utc}: {e}")
+                        signal = None # Ensure signal is None on error
+                else:
+                    signal = None # Skip signal generation
 
             # Process Signal & Execute Order
             if signal == "BUY":
@@ -350,13 +349,6 @@ class BacktestingEngine:
         )
 
         print("\n--- Backtest Performance Report ---")
-            portfolio_history=self.portfolio_history,
-            trades_log=self.trades,
-            initial_capital=initial_capital,
-            risk_free_rate=risk_free_rate
-        )
-
-        print("\n--- Backtest Performance Report ---")
         if report and "error" not in report:
             for key, value in report.items():
                 # Format percentage values
@@ -401,7 +393,7 @@ class BacktestingEngine:
             print("Portfolio history is empty, skipping equity curve plot generation.")
 
         print("\nBacktest run finished.")
-        # pass # pass is not needed at the end of the function if there's other code
+
 
 if __name__ == '__main__':
     # Example usage (optional, for testing purposes)

@@ -164,4 +164,3 @@ if __name__ == '__main__':
     if zero_capital_report:
         for key, value in zero_capital_report.items():
             print(f"{key.replace('_', ' ').title()}: {value}")
-```
