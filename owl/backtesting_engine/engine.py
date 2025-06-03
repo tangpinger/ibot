@@ -10,6 +10,7 @@ import pytz
 from owl.analytics_reporting.reporter import generate_performance_report
 from owl.analytics_reporting.plotter import plot_equity_curve
 # pandas as pd is already imported at the top of the file
+import logging
 
 class BacktestingEngine:
     """
@@ -260,8 +261,18 @@ class BacktestingEngine:
                         current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
                     else: # If already timezone-aware (e.g., UTC)
                         current_datetime_utc8 = current_timestamp_utc.tz_convert('Asia/Shanghai')
-                # else: # current_timestamp_utc is already tz-aware, this should not happen if data is consistently handled
-                #    current_datetime_utc8 = current_timestamp_utc.tz_convert('Asia/Shanghai')
+
+                    # Adjust current_datetime_utc8 time based on buy_check_time from config
+                    try:
+                        buy_check_time_str = self.config['scheduler']['buy_check_time']
+                        buy_check_hour, buy_check_minute = map(int, buy_check_time_str.split(':'))
+                        current_datetime_utc8 = current_datetime_utc8.replace(hour=buy_check_hour, minute=buy_check_minute, second=0, microsecond=0)
+                    except KeyError:
+                        logging.warning("Config `[scheduler][buy_check_time]` not found. Using original OHLCV data time for signal generation.")
+                    except ValueError:
+                        logging.warning(f"Malformed `buy_check_time` string: '{buy_check_time_str}'. Expected HH:MM format. Using original OHLCV data time.")
+                    except Exception as e: # Catch any other unexpected errors during time adjustment
+                        logging.warning(f"Error adjusting time with buy_check_time: {e}. Using original OHLCV data time.")
 
                 except Exception as e:
                     print(f"Error converting timestamp {current_timestamp_utc} to UTC+8: {e}")

@@ -1,0 +1,38 @@
+# Example configuration for Owl Trading Bot
+
+[api_keys]
+okx_api_key = ""
+okx_secret_key = ""
+okx_password = ""
+
+[strategy]
+n_day_high_period = 7 # Value of N for N-day high breakout strategy
+buy_cash_percentage = 0.8 # Spend 80% of current cash on a BUY signal
+risk_free_rate = 0.0 # Annual risk-free rate for Sharpe Ratio calculation
+
+[mode]
+dry_run = true # Set to false for live trading
+
+[scheduler]
+# Times are in UTC+8 (Asia/Shanghai)
+daily_data_fetch_time = "10:00"
+buy_check_time = "15:50" # This is the time the signal generator will effectively see due to engine adjustment
+buy_execute_time = "15:55" # This is the end of the buy window for SignalGenerator
+sell_check_time = "09:50"
+sell_execute_time = "09:55"
+
+[logging]
+log_file = "owl_bot.log"
+log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+[backtesting]
+symbol = "BTC/USDT" # Using spot symbol for broader data availability if SWAP fails
+timeframe = "1d"
+start_date = "2023-10-01" # Shorter period for quicker test
+end_date = "2023-10-31"   # One month
+initial_capital = 10000.0
+commission_rate = 0.001
+
+# [proxy]
+# proxy_url = "socks5h://user:password@your_proxy_host:port"
+# proxy_type = "socks5h"
