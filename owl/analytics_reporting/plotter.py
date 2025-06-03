@@ -41,6 +41,23 @@ def plot_equity_curve(portfolio_history_df, output_path="equity_curve.png"):
         df_to_plot['timestamp'] = pd.to_datetime(df_to_plot['timestamp'])
         df_to_plot = df_to_plot.sort_values(by='timestamp')
 
+        # Normalize the 'price' column
+        if not df_to_plot.empty and 'total_value' in df_to_plot.columns and 'price' in df_to_plot.columns:
+            initial_total_value = df_to_plot['total_value'].iloc[0]
+            initial_price = df_to_plot['price'].iloc[0]
+
+            if initial_price != 0:
+                scaling_factor = initial_total_value / initial_price
+            else:
+                scaling_factor = 1  # Avoid division by zero, or log a warning
+                print("Warning: Initial symbol price is zero. Price normalization may not be accurate.")
+
+            df_to_plot['normalized_price'] = df_to_plot['price'] * scaling_factor
+        else:
+            # Handle cases where df_to_plot is empty or columns are missing after sort
+            # This should ideally not happen if input validation passed, but as a safeguard.
+            df_to_plot['normalized_price'] = df_to_plot['price'] # Fallback or raise error
+
         fig, ax1 = plt.subplots(figsize=(12, 6))
 
         # Plot Portfolio Value on primary y-axis
@@ -54,8 +71,8 @@ def plot_equity_curve(portfolio_history_df, output_path="equity_curve.png"):
         # Create secondary y-axis for Symbol Price
         ax2 = ax1.twinx()
         color = 'tab:red'
-        ax2.set_ylabel('Symbol Price', color=color, fontsize=12)  # we already handled the x-label with ax1
-        ax2.plot(df_to_plot['timestamp'], df_to_plot['price'], label='Symbol Price', color=color)
+        ax2.set_ylabel('Normalized Symbol Price (Scaled to Initial Equity)', color=color, fontsize=12)  # we already handled the x-label with ax1
+        ax2.plot(df_to_plot['timestamp'], df_to_plot['normalized_price'], label='Normalized Symbol Price', color=color)
         ax2.tick_params(axis='y', labelcolor=color)
 
         # Title
