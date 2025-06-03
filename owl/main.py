@@ -38,7 +38,7 @@ def main():
             proxy_settings = config.get('proxy', {})  # Try 'proxy' section first
             if not proxy_settings:  # Fallback to 'exchange_settings' if 'proxy' is empty or not found
                 proxy_settings = config.get('exchange_settings', {})
-
+            
             proxy_url = proxy_settings.get('proxy_url')
             proxy_type = proxy_settings.get('proxy_type')
 
@@ -47,7 +47,7 @@ def main():
             okx_api_key = api_keys_config.get('okx_api_key')
             okx_secret_key = api_keys_config.get('okx_secret_key')
             okx_password = api_keys_config.get('okx_password')
-
+            
             exchange_settings_config = config.get('exchange_settings', {})
             exchange_id = exchange_settings_config.get('exchange_id', 'okx') # Default to 'okx'
             is_sandbox_mode = exchange_settings_config.get('sandbox_mode', False)

@@ -38,7 +38,7 @@ class TestDataFetcherProxyConfiguration(unittest.TestCase):
             'http': proxy_url,
             'https': proxy_url,
         }
-
+        
         expected_config = {
             'apiKey': api_key,
             'secret': secret_key,
@@ -70,7 +70,7 @@ class TestDataFetcherProxyConfiguration(unittest.TestCase):
             exchange_id=exchange_id
             # No proxy_url or proxy_type
         )
-
+        
         expected_config = {
             'apiKey': api_key,
             'secret': secret_key,
@@ -88,7 +88,7 @@ class TestDataFetcherProxyConfiguration(unittest.TestCase):
         """
         mock_exchange_instance = MagicMock()
         MockExchangeClass.return_value = mock_exchange_instance
-
+        
         api_key = "test_api_key"
         secret_key = "test_secret_key"
         password = "test_password"
@@ -119,7 +119,7 @@ class TestDataFetcherProxyConfiguration(unittest.TestCase):
         # Simulate the exchange having set_sandbox_mode
         mock_exchange_instance.set_sandbox_mode = MagicMock()
         MockExchangeClass.return_value = mock_exchange_instance
-
+        
         exchange_id = 'okx'
         fetcher = DataFetcher(exchange_id=exchange_id, is_sandbox_mode=True)
 
@@ -139,7 +139,7 @@ class TestDataFetcherProxyConfiguration(unittest.TestCase):
         del mock_exchange_instance.set_sandbox_mode # Ensure it's not there
         mock_exchange_instance.urls = {'api': 'real_api_url', 'test': 'test_api_url'}
         MockExchangeClass.return_value = mock_exchange_instance
-
+        
         exchange_id = 'kraken' # Ensure this matches the patch
         fetcher = DataFetcher(exchange_id=exchange_id, is_sandbox_mode=True)
 

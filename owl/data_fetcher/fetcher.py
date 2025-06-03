@@ -24,7 +24,7 @@ class DataFetcher:
         try:
             exchange_class = getattr(ccxt, exchange_id)
         except AttributeError:
-            raise ValueError(f"Exchange with ID '{exchange_id}' not found in ccxt.")
+            raise ValueError(f"Exchange with ID '{exchange_id}' not found in ccxt. Please check your configuration.") from None
 
         config = {
             'apiKey': api_key,
@@ -101,7 +101,7 @@ class DataFetcher:
 
         try:
             # ccxt returns OHLCV data as a list of lists
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, limit, params)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, limit, params or {})
             if not ohlcv:
                 print(f"No OHLCV data returned for {symbol} with timeframe {timeframe}.")
                 return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -204,13 +204,13 @@ if __name__ == "__main__":
     try:
         from owl.config_manager.config import load_config
         config = load_config() # Expects config.toml in project root
-
+        
         # Load API keys
         api_keys_config = config.get('api_keys', {})
         API_KEY = api_keys_config.get('okx_api_key')
         API_SECRET = api_keys_config.get('okx_secret_key')
         API_PASSWORD = api_keys_config.get('okx_password')
-
+        
         # Load exchange settings
         exchange_settings = config.get('exchange_settings', {})
         EXCHANGE_ID = exchange_settings.get('exchange_id', 'okx')
@@ -222,7 +222,7 @@ if __name__ == "__main__":
             proxy_settings = config.get('exchange_settings', {})
         PROXY_URL = proxy_settings.get('proxy_url')
         PROXY_TYPE = proxy_settings.get('proxy_type')
-
+        
         print("Config loaded for testing DataFetcher:")
         print(f"  API_KEY: {'Set' if API_KEY else 'Not set'}")
         print(f"  EXCHANGE_ID: {EXCHANGE_ID}")
@@ -250,7 +250,7 @@ if __name__ == "__main__":
         # Use a symbol relevant to the configured exchange_id, or a common one like BTC/USDT
         # For OKX, BTC/USDT (spot) or BTC/USDT/USDT (swap if defaultType is swap) can be used.
         # The exact symbol might depend on whether markets are loaded and what the default is.
-        test_symbol = "BTC/USDT"
+        test_symbol = "BTC/USDT" 
         if EXCHANGE_ID == 'okx': # Potentially adjust symbol based on typical OKX usage or if sandbox implies demo swap
              # test_symbol = "BTC-USDT-SWAP" # if using instrument_id like in config.example for backtesting
              pass # Keep BTC/USDT as a general ccxt spot symbol
