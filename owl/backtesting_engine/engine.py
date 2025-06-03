@@ -73,7 +73,8 @@ class BacktestingEngine:
             'asset_entry_price': 0.0          # New field
         }
         self.trades = []
-        self.historical_data = None
+        self.daily_historical_data = None  # Renamed
+        self.hourly_historical_data = None # Added for hourly data
         self.portfolio_history = []
 
     def _update_portfolio_value(self, current_price, timestamp):
@@ -166,7 +167,7 @@ class BacktestingEngine:
         # Retrieve data fetching parameters from [backtesting] config
         bt_config = self.config.get('backtesting', {})
         symbol = bt_config.get('symbol')
-        timeframe = bt_config.get('timeframe', '1d') # Default to '1d' if not specified
+        # timeframe = bt_config.get('timeframe', '1d') # Default to '1d' if not specified - Now fetched explicitly
         start_date_str = bt_config.get('start_date')
         # end_date_str for filtering after fetch is handled later in the method
 
@@ -191,24 +192,38 @@ class BacktestingEngine:
             print(f"Error processing start_date '{start_date_str}': {e}")
             return
 
-        print(f"Fetching historical data for {symbol} ({timeframe}) since {start_date_str} (Timestamp: {since_timestamp}ms UTC)...")
+        # print(f"Fetching historical data for {symbol} ({timeframe}) since {start_date_str} (Timestamp: {since_timestamp}ms UTC)...") # Old message
 
-        # Fetch data
+        # Fetch daily data
+        print(f"Fetching DAILY historical data for {symbol} (1d) since {start_date_str} (Timestamp: {since_timestamp}ms UTC)...")
         try:
-            # We'll assume limit is handled by the fetcher or we fetch all and filter later
-            self.historical_data = self.data_fetcher.fetch_ohlcv(
+            self.daily_historical_data = self.data_fetcher.fetch_ohlcv(
                 symbol=symbol,
-                timeframe=timeframe,
+                timeframe='1d', # Explicitly '1d'
                 since=since_timestamp
             )
         except Exception as e:
-            print(f"Error during data fetching: {e}")
-            self.historical_data = None # Ensure it's None on error
+            print(f"Error during DAILY data fetching: {e}")
+            self.daily_historical_data = None
 
-        # Process fetched data
-        if self.historical_data is None or self.historical_data.empty:
-            # Error message already printed by fetch_ohlcv or previous checks
-            print(f"No data fetched for {symbol} ({timeframe}) since {start_date_str}. Backtest cannot proceed.")
+        if self.daily_historical_data is None or self.daily_historical_data.empty:
+            print(f"No DAILY data fetched for {symbol} (1d) since {start_date_str}. Backtest cannot proceed.")
+            return
+
+        # Fetch hourly data
+        print(f"Fetching HOURLY historical data for {symbol} (1h) since {start_date_str} (Timestamp: {since_timestamp}ms UTC)...")
+        try:
+            self.hourly_historical_data = self.data_fetcher.fetch_ohlcv(
+                symbol=symbol,
+                timeframe='1h', # Explicitly '1h'
+                since=since_timestamp # Use the same 'since' timestamp
+            )
+        except Exception as e:
+            print(f"Error during HOURLY data fetching: {e}")
+            self.hourly_historical_data = None
+
+        if self.hourly_historical_data is None or self.hourly_historical_data.empty:
+            print(f"No HOURLY data fetched for {symbol} (1h) since {start_date_str}. Backtest cannot proceed.")
             return
 
         # Implement end_date filtering
@@ -221,18 +236,27 @@ class BacktestingEngine:
                 # Ensure historical_data timestamps are also UTC for comparison
                 # If they are naive, localize them. If they are already UTC, this is fine.
                 # Most fetchers should return UTC timestamps or allow specifying it.
-                # For this example, let's assume historical_data['timestamp'] are pandas Timestamps.
-                # If they are naive, they should be localized upon creation or here.
-                # If historical_data['timestamp'] is already localized to UTC:
-                if self.historical_data['timestamp'].dt.tz is None:
-                     self.historical_data['timestamp'] = self.historical_data['timestamp'].dt.tz_localize('UTC')
+                # For this example, let's assume Timestamps are pandas Timestamps.
+                # Filter daily data
+                if self.daily_historical_data['timestamp'].dt.tz is None:
+                     self.daily_historical_data['timestamp'] = self.daily_historical_data['timestamp'].dt.tz_localize('UTC')
+                original_daily_rows = len(self.daily_historical_data)
+                self.daily_historical_data = self.daily_historical_data[self.daily_historical_data['timestamp'] <= end_date_ts]
+                print(f"Filtered DAILY historical data up to end_date {end_date_str}. Rows changed from {original_daily_rows} to {len(self.daily_historical_data)}.")
 
-                original_rows = len(self.historical_data)
-                self.historical_data = self.historical_data[self.historical_data['timestamp'] <= end_date_ts]
-                print(f"Filtered historical data up to end_date {end_date_str}. Rows changed from {original_rows} to {len(self.historical_data)}.")
+                if self.daily_historical_data.empty:
+                    print(f"No DAILY data remains after filtering for end_date {end_date_str}. Backtest cannot proceed.")
+                    return
 
-                if self.historical_data.empty:
-                    print(f"No data remains after filtering for end_date {end_date_str}. Backtest cannot proceed.")
+                # Filter hourly data
+                if self.hourly_historical_data['timestamp'].dt.tz is None:
+                     self.hourly_historical_data['timestamp'] = self.hourly_historical_data['timestamp'].dt.tz_localize('UTC')
+                original_hourly_rows = len(self.hourly_historical_data)
+                self.hourly_historical_data = self.hourly_historical_data[self.hourly_historical_data['timestamp'] <= end_date_ts]
+                print(f"Filtered HOURLY historical data up to end_date {end_date_str}. Rows changed from {original_hourly_rows} to {len(self.hourly_historical_data)}.")
+
+                if self.hourly_historical_data.empty:
+                    print(f"No HOURLY data remains after filtering for end_date {end_date_str}. Backtest cannot proceed.")
                     return
             except ValueError as e:
                 print(f"Error: Invalid date format for end_date '{end_date_str}'. Expected YYYY-MM-DD. Details: {e}")
@@ -240,8 +264,9 @@ class BacktestingEngine:
             except Exception as e:
                 print(f"Error processing end_date '{end_date_str}': {e}. Proceeding without end_date filtering.")
 
-        print("Successfully prepared historical data. Starting simulation loop...")
-        # print(self.historical_data.head()) # Optional: keep for debugging
+        print("Successfully prepared DAILY and HOURLY historical data. Starting simulation loop...")
+        # print(self.daily_historical_data.head()) # Optional: keep for debugging
+        # print(self.hourly_historical_data.head()) # Optional: keep for debugging
 
         # Strategy parameters from [strategy] config
         strategy_config = self.config.get('strategy', {})
@@ -259,17 +284,17 @@ class BacktestingEngine:
         # The 'symbol' for trading operations is the one from [backtesting] config
         # It's already assigned to the 'symbol' variable earlier.
 
-        # Main data loop
-        for current_idx, row in enumerate(self.historical_data.itertuples(index=False)): # index=False if current_idx is simple enum
+        # Main data loop (iterates over DAILY data)
+        for current_idx, row in enumerate(self.daily_historical_data.itertuples(index=False)): # index=False if current_idx is simple enum
             try:
                 # Ensure 'timestamp', 'high', 'low', 'close' are actual column names in your DataFrame
                 current_timestamp_utc = getattr(row, 'timestamp')
-                current_day_high = getattr(row, 'high')
-                current_day_low = getattr(row, 'low', None) # Use None if 'low' is not present
-                current_close_price = getattr(row, 'close')
+                current_day_high = getattr(row, 'high') # From daily data
+                current_day_low = getattr(row, 'low', None) # From daily data
+                current_close_price = getattr(row, 'close') # From daily data
             except AttributeError as e:
                 print(f"Error accessing data in row (index {getattr(row, 'Index', 'N/A')}): {row}. Missing required OHLCV attribute. Details: {e}")
-                print("Make sure historical_data DataFrame has 'timestamp', 'high', 'low', and 'close' columns.")
+                print("Make sure DAILY historical_data DataFrame has 'timestamp', 'high', 'low', and 'close' columns.")
                 if hasattr(row, 'close') and hasattr(row, 'timestamp'):
                      self._update_portfolio_value(current_price=getattr(row, 'close'), timestamp=getattr(row, 'timestamp'))
                 continue
@@ -284,7 +309,8 @@ class BacktestingEngine:
             buy_signal = None
             if self.portfolio['asset_qty'] == 0: # Only check for buy if we don't hold assets
                 if current_idx >= n_period:
-                    historical_data_for_signal = self.historical_data.iloc[:current_idx]
+                    # Signal generation uses daily data up to the current day
+                    historical_data_for_signal = self.daily_historical_data.iloc[:current_idx]
                     try:
                         if current_timestamp_utc.tzinfo is None:
                             current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
@@ -304,14 +330,44 @@ class BacktestingEngine:
             if buy_signal == "BUY":
                 # Ensure we are not already holding assets before buying
                 if self.portfolio['asset_qty'] == 0:
+                    # Determine the price for the BUY order using hourly data
+                    price_for_buy_order = current_close_price # Default to daily close price
+
+                    # current_datetime_utc8 is from the signal generation step
+                    # Convert current_datetime_utc8 (Asia/Shanghai) to UTC to match hourly_historical_data timestamps
+                    target_utc_for_hourly_price = current_datetime_utc8.tz_convert('UTC')
+
+                    # Find the latest hourly candle whose timestamp is less than or equal to target_utc_for_hourly_price
+                    # Ensure self.hourly_historical_data['timestamp'] are pd.Timestamp objects and UTC localized (done during data prep)
+                    relevant_hourly_candles = self.hourly_historical_data[
+                        self.hourly_historical_data['timestamp'] <= target_utc_for_hourly_price
+                    ]
+
+                    if not relevant_hourly_candles.empty:
+                        selected_hourly_candle = relevant_hourly_candles.iloc[-1] # Get the last one (latest)
+                        price_for_buy_order = selected_hourly_candle['close']
+                        logging.info(
+                            f"BUY signal: Using hourly close price {price_for_buy_order:.2f} from candle at "
+                            f"{selected_hourly_candle['timestamp']} (UTC) for order. Target time was {target_utc_for_hourly_price} (UTC)."
+                        )
+                    else:
+                        logging.warning(
+                            f"BUY signal: No hourly candle found at or before {target_utc_for_hourly_price} (UTC). "
+                            f"Falling back to daily close price {current_close_price:.2f} for order. Daily candle timestamp: {current_timestamp_utc}."
+                        )
+                        # price_for_buy_order remains current_close_price (daily)
+
                     cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
-                    if current_close_price > 0:
-                        quantity_to_buy = cash_to_spend_on_buy / current_close_price
+                    if price_for_buy_order > 0: # Use the determined price for buy order
+                        quantity_to_buy = cash_to_spend_on_buy / price_for_buy_order
                         if quantity_to_buy > 0:
-                            logging.info(f"Timestamp {current_timestamp_utc}: BUY signal. Attempting to buy {quantity_to_buy:.4f} {symbol} at {current_close_price:.2f}")
+                            logging.info(f"Timestamp {current_timestamp_utc}: BUY signal. Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f}")
                             self._simulate_order(
-                                timestamp=current_timestamp_utc, order_type='BUY',
-                                symbol=symbol, price=current_close_price, quantity=quantity_to_buy
+                                timestamp=current_timestamp_utc, # Daily candle's timestamp for trade record
+                                order_type='BUY',
+                                symbol=symbol,
+                                price=price_for_buy_order, # Price from hourly data (or daily fallback)
+                                quantity=quantity_to_buy
                             )
                 else:
                     logging.info(f"Timestamp {current_timestamp_utc}: BUY signal received, but already holding assets. Skipping buy.")
@@ -343,12 +399,43 @@ class BacktestingEngine:
 
                 if is_target_sell_day and is_target_sell_hour:
                     logging.info(f"Timestamp {current_timestamp_utc}: Holding period sell condition met. Holding period: {self.holding_period_days} days. Days passed: {days_passed}. Current time UTC+8: {current_dt_utc8_for_sell_check.strftime('%Y-%m-%d %H:%M')}.")
+
+                    # Determine the price for the SELL order using hourly data's 'open' price
+                    price_for_sell_order = getattr(row, 'close') # Default to current daily close price from 'row'
+
+                    # Convert current_dt_utc8_for_sell_check (Asia/Shanghai) to UTC
+                    target_utc_for_hourly_sell_price = current_dt_utc8_for_sell_check.tz_convert('UTC')
+
+                    # Find the earliest hourly candle whose timestamp is >= target_utc_for_hourly_sell_price
+                    relevant_hourly_candles_for_sell = self.hourly_historical_data[
+                        self.hourly_historical_data['timestamp'] >= target_utc_for_hourly_sell_price
+                    ]
+
+                    if not relevant_hourly_candles_for_sell.empty:
+                        selected_hourly_candle_for_sell = relevant_hourly_candles_for_sell.iloc[0] # Get the first one (earliest)
+                        price_for_sell_order = selected_hourly_candle_for_sell['open'] # Use 'open' price
+                        logging.info(
+                            f"SELL condition: Using hourly open price {price_for_sell_order:.2f} from candle at "
+                            f"{selected_hourly_candle_for_sell['timestamp']} (UTC) for order. Target time was >= {target_utc_for_hourly_sell_price} (UTC)."
+                        )
+                    else:
+                        # Fallback explicitly uses the daily close price of the current day's iteration
+                        daily_close_price_for_fallback = getattr(row, 'close')
+                        price_for_sell_order = daily_close_price_for_fallback
+                        logging.warning(
+                            f"SELL condition: No hourly candle found at or after {target_utc_for_hourly_sell_price} (UTC). "
+                            f"Falling back to daily close price {price_for_sell_order:.2f} for order. Daily candle timestamp: {current_timestamp_utc}."
+                        )
+
                     quantity_to_sell = self.portfolio['asset_qty'] * self.sell_asset_percentage
                     if quantity_to_sell > 0:
-                        logging.info(f"Attempting to SELL {quantity_to_sell:.4f} {symbol} at {current_close_price:.2f}")
+                        logging.info(f"Attempting to SELL {quantity_to_sell:.4f} {symbol} at determined price {price_for_sell_order:.2f}")
                         self._simulate_order(
-                            timestamp=current_timestamp_utc, order_type='SELL',
-                            symbol=symbol, price=current_close_price, quantity=quantity_to_sell
+                            timestamp=current_timestamp_utc, # Daily candle's timestamp for trade record
+                            order_type='SELL',
+                            symbol=symbol,
+                            price=price_for_sell_order, # Price from hourly open (or daily close fallback)
+                            quantity=quantity_to_sell
                         )
 
             self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc)
