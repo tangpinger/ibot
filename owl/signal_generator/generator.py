@@ -119,21 +119,11 @@ class SignalGenerator:
 
         is_valid_buy_day = day_of_week in [0, 1, 4] # Mon, Tue, Fri
 
-        is_valid_buy_time_window = False
-        if self.buy_window_start_time and self.buy_window_end_time:
-            is_valid_buy_time_window = self.buy_window_start_time <= current_time_utc8 <= self.buy_window_end_time
-        else:
-            logging.warning("SignalGenerator: Buy window start or end time is not properly configured. Buy time check will fail.")
-
         if not is_valid_buy_day:
             print(f"SignalGenerator: Breakout occurred, but today ({current_datetime_utc8.strftime('%A')}) is not a valid buy day (Mon, Tue, Fri).")
             return None
 
-        if not is_valid_buy_time_window:
-            print(f"SignalGenerator: Breakout occurred on a valid day, but current time ({current_datetime_utc8.strftime('%H:%M')}) is not within the configured buy window ({self.buy_window_start_str}-{self.buy_window_end_str}).")
-            return None
-
-        print(f"SignalGenerator: BUY signal generated! Breakout confirmed on a valid buy day ({current_datetime_utc8.strftime('%A')}) and time window ({current_datetime_utc8.strftime('%H:%M')}).")
+        print(f"SignalGenerator: BUY signal generated! Breakout confirmed on a valid buy day ({current_datetime_utc8.strftime('%A')}).")
         return "BUY"
 
 # Example of how to use it (optional, for testing within this file)
@@ -190,7 +180,7 @@ if __name__ == "__main__":
     invalid_time_datetime = datetime(2023, 10, 23, 10, 0, 0) # This is a Monday
     signal_invalid_time = sg.check_breakout_signal(historical_df, current_high_price, invalid_time_datetime)
     logging.info(f"Signal for Scenario 4: {signal_invalid_time}")
-    assert signal_invalid_time is None
+    assert signal_invalid_time == "BUY"
 
     # Scenario 5: Not enough data
     print("\n--- Scenario 5: Not enough historical data ---")
