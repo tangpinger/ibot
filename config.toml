@@ -11,6 +11,10 @@ buy_cash_percentage = 0.8 # Spend 80% of current cash on a BUY signal
 risk_free_rate = 0.0 # Annual risk-free rate for Sharpe Ratio calculation
 buy_window_start_time = "15:00"
 buy_window_end_time = "16:00"
+# sell_asset_percentage and holding_period_days from example are missing here, that's fine.
+# We will add the new sell window parameters.
+sell_window_start_time = "09:00" # Start time for the sell window (UTC+8) e.g. "09:00" for 9 AM
+sell_window_end_time = "10:00"   # End time for the sell window (UTC+8) e.g. "10:00" for 10 AM. Sell attempts occur within [start, end).
 
 [mode]
 dry_run = true # Set to false for live trading

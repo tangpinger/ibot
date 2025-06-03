@@ -48,23 +48,33 @@ class BacktestingEngine:
 
             buy_window_start_time_str = strategy_conf.get('buy_window_start_time')
             buy_window_end_time_str = strategy_conf.get('buy_window_end_time')
-            # sell_window_start_time_str and sell_window_end_time_str removed
 
-            if not all([buy_window_start_time_str, buy_window_end_time_str]):
+            self.sell_window_start_str = strategy_conf.get('sell_window_start_time', "09:00") # Default from problem desc
+            self.sell_window_end_str = strategy_conf.get('sell_window_end_time', "10:00")   # Default from problem desc
+
+            if not all([buy_window_start_time_str, buy_window_end_time_str]): # sell times have defaults
                 raise ValueError("Missing buy_window_start_time or buy_window_end_time in [strategy]")
+
+            try:
+                self.sell_window_start_time = datetime.strptime(self.sell_window_start_str, "%H:%M").time()
+                self.sell_window_end_time = datetime.strptime(self.sell_window_end_str, "%H:%M").time()
+            except ValueError as e_time:
+                logging.error(f"Invalid format for sell_window_start_time ('{self.sell_window_start_str}') or sell_window_end_time ('{self.sell_window_end_str}'). Expected HH:MM. Error: {e_time}. Falling back to defaults 09:00 and 10:00.")
+                self.sell_window_start_time = datetime.strptime("09:00", "%H:%M").time()
+                self.sell_window_end_time = datetime.strptime("10:00", "%H:%M").time()
 
         except KeyError as e:
             raise ValueError(f"Error: Missing critical key '{e}' in configuration.") from e
-        except ValueError as e:
+        except ValueError as e: # Catches general value errors, including from float/int conversions
             raise ValueError(f"Error processing configuration values: {e}") from e
-        except TypeError:
+        except TypeError: # Catches errors if config sections like 'strategy' or 'backtesting' are missing
              raise ValueError("Error: Configuration section is missing or malformed.")
 
         self.signal_generator = SignalGenerator(
             n_day_high_period=n_day_high_period,
             buy_window_start_time_str=buy_window_start_time_str,
             buy_window_end_time_str=buy_window_end_time_str
-            # m_day_low_period and sell window times removed
+            # m_day_low_period and sell window times are engine-specific for sell logic
         )
 
         self.portfolio = {
@@ -427,40 +437,54 @@ class BacktestingEngine:
                 # If hold_period=0 days. Buy Mon. Sell Tue. Sell if days_passed >= 1
                 days_passed = (current_ts_utc_localized.normalize() - entry_ts_utc.normalize()).days
 
-                # Target sell time: 10 AM Beijing Time on the sell day
                 current_dt_utc8_for_sell_check = current_ts_utc_localized.tz_convert('Asia/Shanghai')
+                current_time_utc8 = current_dt_utc8_for_sell_check.time()
 
                 is_target_sell_day = days_passed >= self.holding_period_days
-                is_target_sell_hour = current_dt_utc8_for_sell_check.hour == 10
 
-                if is_target_sell_day and is_target_sell_hour:
-                    logging.info(f"Timestamp {current_timestamp_utc}: Holding period sell condition met. Holding period: {self.holding_period_days} days. Days passed: {days_passed}. Current time UTC+8: {current_dt_utc8_for_sell_check.strftime('%Y-%m-%d %H:%M')}.")
+                if is_target_sell_day:
+                    logging.info(
+                        f"Timestamp {current_timestamp_utc}: Holding period sell condition met. "
+                        f"Holding period: {self.holding_period_days} days. Days passed: {days_passed}. "
+                        f"Sell window: {self.sell_window_start_str} - {self.sell_window_end_str} UTC+8."
+                    )
 
-                    # Determine the price for the SELL order using hourly data's 'open' price
-                    price_for_sell_order = getattr(row, 'close') # Default to current daily close price from 'row'
+                    price_for_sell_order = getattr(row, 'close') # Default to current daily close price
 
-                    # Convert current_dt_utc8_for_sell_check (Asia/Shanghai) to UTC
-                    target_utc_for_hourly_sell_price = current_dt_utc8_for_sell_check.tz_convert('UTC')
+                    # Target datetime for fetching sell price is the END of the sell window on the current day (UTC+8)
+                    target_sell_datetime_utc8 = current_dt_utc8_for_sell_check.replace(
+                        hour=self.sell_window_end_time.hour,
+                        minute=self.sell_window_end_time.minute,
+                        second=0, microsecond=0
+                    )
+                    target_utc_for_hourly_sell_price = target_sell_datetime_utc8.tz_convert('UTC')
 
-                    # Find the earliest hourly candle whose timestamp is >= target_utc_for_hourly_sell_price
+                    logging.info(f"SELL logic: Target sell time for price check is {target_sell_datetime_utc8.strftime('%Y-%m-%d %H:%M:%S')} UTC+8 ({target_utc_for_hourly_sell_price.strftime('%Y-%m-%d %H:%M:%S')} UTC).")
+
+                    # Search for the first hourly candle AT or AFTER target_utc_for_hourly_sell_price
+                    # but BEFORE the start of the next day (relative to target_utc_for_hourly_sell_price.date() in UTC)
+                    search_start_utc = target_utc_for_hourly_sell_price
+                    # Normalize to get the beginning of the day in UTC, then add 1 day for the search boundary
+                    search_end_utc = (target_utc_for_hourly_sell_price.normalize() + pd.Timedelta(days=1))
+
                     relevant_hourly_candles_for_sell = self.hourly_historical_data[
-                        self.hourly_historical_data['timestamp'] >= target_utc_for_hourly_sell_price
+                        (self.hourly_historical_data['timestamp'] >= search_start_utc) &
+                        (self.hourly_historical_data['timestamp'] < search_end_utc) # Strictly less than next day start
                     ]
 
                     if not relevant_hourly_candles_for_sell.empty:
-                        selected_hourly_candle_for_sell = relevant_hourly_candles_for_sell.iloc[0] # Get the first one (earliest)
-                        price_for_sell_order = selected_hourly_candle_for_sell['open'] # Use 'open' price
+                        selected_hourly_candle_for_sell = relevant_hourly_candles_for_sell.iloc[0]
+                        price_for_sell_order = selected_hourly_candle_for_sell['open']
                         logging.info(
-                            f"SELL condition: Using hourly open price {price_for_sell_order:.2f} from candle at "
-                            f"{selected_hourly_candle_for_sell['timestamp']} (UTC) for order. Target time was >= {target_utc_for_hourly_sell_price} (UTC)."
+                            f"SELL condition: Using HOURLY OPEN price {price_for_sell_order:.2f} from candle at "
+                            f"{selected_hourly_candle_for_sell['timestamp']} (UTC) for order. Searched from {search_start_utc} (UTC) within the same day."
                         )
                     else:
-                        # Fallback explicitly uses the daily close price of the current day's iteration
                         daily_close_price_for_fallback = getattr(row, 'close')
                         price_for_sell_order = daily_close_price_for_fallback
                         logging.warning(
-                            f"SELL condition: No hourly candle found at or after {target_utc_for_hourly_sell_price} (UTC). "
-                            f"Falling back to daily close price {price_for_sell_order:.2f} for order. Daily candle timestamp: {current_timestamp_utc}."
+                            f"SELL condition: No hourly candle found at or after {search_start_utc} (UTC) on {search_start_utc.date()} (UTC). "
+                            f"Falling back to DAILY CLOSE price {price_for_sell_order:.2f} from daily candle at {current_timestamp_utc}."
                         )
 
                     quantity_to_sell = self.portfolio['asset_qty'] * self.sell_asset_percentage
