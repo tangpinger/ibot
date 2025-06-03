@@ -441,13 +441,11 @@ class BacktestingEngine:
                 current_time_utc8 = current_dt_utc8_for_sell_check.time()
 
                 is_target_sell_day = days_passed >= self.holding_period_days
-                is_within_sell_window = (self.sell_window_start_time <= current_time_utc8 < self.sell_window_end_time)
 
-                if is_target_sell_day and is_within_sell_window:
+                if is_target_sell_day:
                     logging.info(
                         f"Timestamp {current_timestamp_utc}: Holding period sell condition met. "
                         f"Holding period: {self.holding_period_days} days. Days passed: {days_passed}. "
-                        f"Current time UTC+8: {current_dt_utc8_for_sell_check.strftime('%Y-%m-%d %H:%M')}. "
                         f"Sell window: {self.sell_window_start_str} - {self.sell_window_end_str} UTC+8."
                     )
 
