@@ -99,38 +99,15 @@ class DataFetcher:
             print(f"Exchange {self.exchange_id} does not support fetching OHLCV data.")
             return None
 
-        all_ohlcv = []
-        current_since = since
-
         try:
-            if current_since is not None:
-                fetch_limit = 100  # Safe limit for fetching in chunks
-                while True:
-                    # Respect rate limit - ccxt handles this mostly, but good for long loops
-                    # time.sleep(self.exchange.rateLimit / 1000) # Optional: consider if issues arise
-
-                    ohlcv_chunk = self.exchange.fetch_ohlcv(symbol, timeframe, current_since, fetch_limit, params or {})
-
-                    if ohlcv_chunk:
-                        all_ohlcv.extend(ohlcv_chunk)
-                        # Update 'since' to the timestamp of the last candle + 1ms
-                        current_since = ohlcv_chunk[-1][0] + 1
-
-                        # If fewer candles than limit were returned, all data for the period is fetched
-                        if len(ohlcv_chunk) < fetch_limit:
-                            break
-                    else:
-                        # No more data returned
-                        break
-            else:
-                # Original behavior: fetch with given limit or exchange default if no 'since'
-                all_ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, limit, params or {})
-
-            if not all_ohlcv:
-                print(f"No OHLCV data returned or fetched for {symbol} with timeframe {timeframe}.")
+            # ccxt returns OHLCV data as a list of lists
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, limit, params or {})
+            if not ohlcv:
+                print(f"No OHLCV data returned for {symbol} with timeframe {timeframe}.")
                 return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             # It's common for exchanges (like OKX) to return the open time of the candle.
             # For daily candles, this means 00:00 UTC of that day.
