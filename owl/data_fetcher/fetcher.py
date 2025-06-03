@@ -31,6 +31,7 @@ class DataFetcher:
             'secret': secret_key,
             'password': password,
             'verbose': False, # Ensure this is False or commented out for non-debug runs
+            'rateLimit': True,
         }
         # Remove None values from config as ccxt expects them to be absent if not used
         config = {k: v for k, v in config.items() if v is not None}
@@ -84,35 +85,115 @@ class DataFetcher:
         """
         Fetches historical OHLCV (K-line) data.
 
+        If 'since' is provided, the function will attempt to fetch all available OHLCV data
+        starting from the 'since' timestamp up to the most recent data, making multiple
+        API calls if necessary. The 'limit' parameter, if also provided with 'since',
+        will act as a cap on the total number of candles retrieved in this paginated fetch.
+
+        If 'since' is not provided, it fetches the most recent candles, up to the number
+        specified by 'limit' (or the exchange's default if 'limit' is None).
+
+        API rate limits are automatically handled by the underlying ccxt library,
+        as rate limiting is enabled in the DataFetcher's configuration.
+
         Args:
             symbol (str): The trading symbol (e.g., 'BTC/USDT').
             timeframe (str, optional): The timeframe for K-lines (e.g., '1m', '5m', '1h', '1d'). Defaults to '1d'.
-            since (int, optional): Timestamp in milliseconds for the earliest candle. Defaults to None.
-            limit (int, optional): The maximum number of candles to fetch. Defaults to None (exchange default).
+            since (int, optional): Timestamp in milliseconds for the earliest candle to fetch.
+                                   If None, fetches most recent data.
+            limit (int, optional): The maximum number of candles to fetch.
+                                   If 'since' is given, this is the total max.
+                                   If 'since' is None, this is the limit for recent data.
+                                   Defaults to None (exchange default for recent, all for historical).
             params (dict, optional): Extra parameters to pass to the exchange API.
 
         Returns:
             pandas.DataFrame: A DataFrame with columns ['timestamp', 'open', 'high', 'low', 'close', 'volume'],
-                              or None if an error occurs.
+                              with 'timestamp' as datetime objects (UTC). Returns an empty DataFrame if
+                              no data is found, or None if an error occurs that prevents data retrieval.
         """
         if not self.exchange.has['fetchOHLCV']:
             print(f"Exchange {self.exchange_id} does not support fetching OHLCV data.")
             return None
 
         try:
-            # ccxt returns OHLCV data as a list of lists
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, limit, params or {})
-            if not ohlcv:
+            timeframe_duration_ms = self.exchange.parse_timeframe(timeframe) * 1000
+            all_ohlcv_data = [] # Initialize here for broader scope
+
+            if since is not None:
+                current_since = since
+                exchange_batch_limit = 100 # Default internal batch limit
+
+                # Calculate initial batch size considering the overall limit
+                # This ensures we don't over-fetch in the first call if limit < exchange_batch_limit
+                current_batch_limit = exchange_batch_limit
+                if limit is not None:
+                    current_batch_limit = min(limit, exchange_batch_limit)
+
+                while True:
+                    if limit is not None and len(all_ohlcv_data) >= limit:
+                        break # Already fetched enough data
+
+                    # Adjust current_batch_limit if remaining candles needed are less than exchange_batch_limit
+                    if limit is not None:
+                        remaining_limit = limit - len(all_ohlcv_data)
+                        if remaining_limit <= 0: # Should be caught by the check above, but good for safety
+                             break
+                        current_batch_limit = min(remaining_limit, exchange_batch_limit)
+
+                    if current_batch_limit <= 0 : # No more candles to fetch due to limit
+                        break
+
+                    # print(f"Fetching {current_batch_limit} candles for {symbol} from {self.exchange.iso8601(current_since)}")
+                    ohlcv_batch = self.exchange.fetch_ohlcv(
+                        symbol,
+                        timeframe,
+                        since=current_since,
+                        limit=current_batch_limit, # Use adjusted batch limit
+                        params=params or {}
+                    )
+
+                    if ohlcv_batch:
+                        all_ohlcv_data.extend(ohlcv_batch)
+                        last_timestamp_in_batch = ohlcv_batch[-1][0]
+                        current_since = last_timestamp_in_batch + timeframe_duration_ms
+
+                        # Break if fewer candles than requested were returned (end of data)
+                        if len(ohlcv_batch) < current_batch_limit:
+                            break
+                        # If current_batch_limit was already small due to overall 'limit',
+                        # and we got exactly that many, we might be at the overall 'limit'.
+                        # The check at the beginning of the loop (len(all_ohlcv_data) >= limit) handles this.
+                    else:
+                        break # No more data returned by exchange
+
+                # Slice data if 'limit' was provided and we fetched more (e.g. due to batching)
+                if limit is not None and len(all_ohlcv_data) > limit:
+                    all_ohlcv_data = all_ohlcv_data[:limit]
+
+            else: # Original behavior if 'since' is not provided
+                # If 'since' is None, ccxt fetches the most recent candles.
+                # The 'limit' here directly applies to how many recent candles to get.
+                ohlcv_data_raw = self.exchange.fetch_ohlcv(symbol, timeframe, since, limit, params or {})
+                if ohlcv_data_raw:
+                    all_ohlcv_data.extend(ohlcv_data_raw) # Use extend to be consistent, though it's just one batch
+
+            if not all_ohlcv_data:
+                # Updated message to be more generic
                 print(f"No OHLCV data returned for {symbol} with timeframe {timeframe}.")
                 return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df = pd.DataFrame(all_ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            # It's common for exchanges (like OKX) to return the open time of the candle.
-            # For daily candles, this means 00:00 UTC of that day.
-            # The design doc mentions Beijing time (UTC+8). We'll handle timezones higher up.
+
+            # Ensure final df respects limit if 'since' was None and limit was applied by ccxt directly
+            # This is mostly for safety, as ccxt should return 'limit' items.
+            # However, if 'since' was used, slicing is already done.
+            if since is None and limit is not None and len(df) > limit:
+                 df = df.head(limit)
+
             return df
+
         except ccxt.NetworkError as e:
             print(f"Network error while fetching OHLCV for {symbol}: {e}")
         except ccxt.ExchangeError as e:
