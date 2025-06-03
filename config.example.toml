@@ -13,6 +13,8 @@ risk_free_rate = 0.0 # Annual risk-free rate for Sharpe Ratio calculation
 sell_asset_percentage = 1.0
 buy_window_start_time = "15:00"
 buy_window_end_time = "16:00"
+sell_window_start_time = "09:00" # Start time for the sell window (UTC+8) e.g. "09:00" for 9 AM
+sell_window_end_time = "10:00"   # End time for the sell window (UTC+8) e.g. "10:00" for 10 AM. Sell attempts occur within [start, end).
 holding_period_days = 1
 # sell_params, stop_loss, take_profit can be added here later
 

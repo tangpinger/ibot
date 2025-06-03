@@ -51,6 +51,13 @@ def load_config():
     try:
         with open(CONFIG_FILE_PATH, 'r') as f:
             config = toml.load(f)
+
+        # Ensure strategy section and its specific keys exist with defaults
+        strategy_config = config.get('strategy', {})
+        strategy_config['sell_window_start_time'] = strategy_config.get('sell_window_start_time', "09:00")
+        strategy_config['sell_window_end_time'] = strategy_config.get('sell_window_end_time', "10:00")
+        config['strategy'] = strategy_config
+
         return config
     except toml.TomlDecodeError as e:
         raise ConfigError(f"Error decoding '{CONFIG_FILE_NAME}': {e}")
@@ -78,6 +85,11 @@ log_file = "test_bot.log"
         print("Configuration loaded successfully!")
         print(f"Dry run mode: {config_settings.get('mode', {}).get('dry_run')}")
         print(f"Log level: {config_settings.get('logging', {}).get('log_level')}")
+        # Test new strategy config
+        strategy_settings = config_settings.get('strategy', {})
+        print(f"Sell window start: {strategy_settings.get('sell_window_start_time')}")
+        print(f"Sell window end: {strategy_settings.get('sell_window_end_time')}")
+
 
         # Clean up dummy config if created
         if 'dummy_config_path' in locals() and dummy_config_path.exists():

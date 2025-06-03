@@ -31,11 +31,12 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
                 'n_day_high_period': 20,
                 'buy_cash_percentage': 0.80,
                 'risk_free_rate': 0.02,
-                # m_day_low_period, sell_window_start_time, sell_window_end_time removed
                 'sell_asset_percentage': 1.0,
-                'holding_period_days': 1, # Added for new strategy
-                'buy_window_start_time': "09:00", # This can remain, not directly used by price pickup logic
+                'holding_period_days': 1,
+                'buy_window_start_time': "09:00",
                 'buy_window_end_time': "16:00", # Target buy execution time UTC+8
+                'sell_window_start_time': "09:00", # Default sell window start
+                'sell_window_end_time': "10:00",   # Default sell window end
             },
             'scheduler': {}, # Empty as per previous changes
             'proxy': {}, 'api_keys': {}, 'exchange_settings': {}
@@ -326,6 +327,368 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         # On 01-04, portfolio is empty, so check_breakout_signal is called.
         self.assertEqual(mock_sg_instance.check_breakout_signal.call_count, 2, "check_breakout_signal should be called on 2023-01-02 and 2023-01-04")
 
+    # --- Tests for new SELL Logic ---
+
+    @patch(PATCH_PATH_SG)
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_triggered_within_window_uses_hourly_price(self, mock_logging, MockSignalGenerator):
+        mock_sg_instance = MockSignalGenerator.return_value
+
+        # --- Config for this test ---
+        current_config = self.sample_config.copy()
+        current_config['strategy']['n_day_high_period'] = 1
+        current_config['strategy']['holding_period_days'] = 1
+        current_config['strategy']['sell_window_start_time'] = "09:00"
+        current_config['strategy']['sell_window_end_time'] = "10:00"
+        # Daily data timeframe for engine
+        current_config['backtesting']['timeframe'] = '1d'
+        # Modify end_date to ensure the sell day (Jan 3) is processed
+        current_config['backtesting']['end_date'] = '2023-01-03'
+
+
+        # --- Data Setup ---
+        # BUY on 2023-01-02. Signal check at 10:00 UTC+8. Buy price at 16:00 UTC+8 (08:00 UTC).
+        buy_trigger_daily_ts_utc = pd.Timestamp('2023-01-02 00:00:00', tz='UTC')
+        buy_signal_check_time_utc8 = datetime.strptime(current_config['strategy']['buy_window_start_time'], "%H:%M").time() # Using start for signal check point
+
+        # SELL on 2023-01-03. For sell condition to be met by daily data point's time:
+        # Daily data for 2023-01-03 needs timestamp like 01:30 UTC (09:30 UTC+8).
+        sell_trigger_daily_ts_utc = pd.Timestamp('2023-01-03 01:30:00', tz='UTC') # This makes current_time_utc8 = 09:30
+
+        temp_daily_data = self.sample_daily_ohlcv_data.copy()
+        # Update timestamp for Jan 3 to fall into the sell window
+        temp_daily_data.loc[temp_daily_data['timestamp'] == pd.Timestamp('2023-01-03', tz='UTC'), 'timestamp'] = sell_trigger_daily_ts_utc
+
+        # Hourly price for SELL: At sell_window_end_time (10:00 UTC+8 = 02:00 UTC on Jan 3)
+        # This is already set up by self.hourly_open_price_for_sell = 120.25 at pd.Timestamp('2023-01-03 02:00:00', tz='UTC')
+        expected_sell_price = self.hourly_open_price_for_sell
+
+        # Mock DataFetcher to use this modified daily data
+        original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+            if timeframe == '1d':
+                data_to_return = temp_daily_data.copy()
+            elif timeframe == '1h':
+                data_to_return = self.sample_hourly_ohlcv_data.copy() # Standard hourly data
+            else:
+                return pd.DataFrame()
+
+            if since is not None:
+                since_ts = pd.Timestamp(since, unit='ms', tz='UTC')
+                if timeframe == '1d': # Normalize for daily comparison
+                    data_to_return = data_to_return[data_to_return['timestamp'].dt.normalize() >= since_ts.normalize()]
+                else:
+                    data_to_return = data_to_return[data_to_return['timestamp'] >= since_ts]
+            return data_to_return
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = temp_mock_fetch_ohlcv_se
+
+        # --- SignalGenerator mock ---
+        def check_breakout_side_effect(*args, **kwargs):
+            dt_utc8_arg = kwargs.get('current_datetime_utc8')
+            # Trigger BUY on 2023-01-02 at the signal check time (e.g., 09:00 UTC+8 from buy_window_start_time)
+            if dt_utc8_arg.date() == buy_trigger_daily_ts_utc.date() and dt_utc8_arg.time() == buy_signal_check_time_utc8:
+                return "BUY"
+            return None
+        mock_sg_instance.check_breakout_signal.side_effect = check_breakout_side_effect
+
+        # --- Initialize and run engine ---
+        engine = BacktestingEngine(
+            config=current_config,
+            data_fetcher=self.mock_data_fetcher,
+            signal_generator=None
+        )
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        # Restore original fetch side effect
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = original_fetch_side_effect
+
+        # --- Assertions ---
+        # Verify BUY order occurred
+        buy_order_call = next((c for c in spy_simulate_order.call_args_list if c.kwargs.get('order_type') == 'BUY'), None)
+        self.assertIsNotNone(buy_order_call, "BUY order was not simulated")
+        qty_bought = buy_order_call.kwargs['quantity']
+
+        # Verify SELL order occurred
+        sell_order_call = next((c for c in spy_simulate_order.call_args_list if c.kwargs.get('order_type') == 'SELL'), None)
+        self.assertIsNotNone(sell_order_call, "SELL order was not simulated within the window")
+
+        sell_kwargs = sell_order_call.kwargs
+        # Sell order recorded against the daily candle timestamp that triggered the check
+        self.assertEqual(sell_kwargs['timestamp'], sell_trigger_daily_ts_utc,
+                         "SELL order timestamp should be the (modified) daily candle's timestamp for the sell day")
+        self.assertEqual(sell_kwargs['price'], expected_sell_price,
+                         "SELL order price should be the hourly open price at sell_window_end_time")
+        self.assertAlmostEqual(sell_kwargs['quantity'], qty_bought * current_config['strategy']['sell_asset_percentage'])
+
+        log_found = any(
+            f"SELL condition: Using HOURLY OPEN price {expected_sell_price:.2f}" in call_args[0][0]
+            for call_args in mock_logging.info.call_args_list
+        )
+        self.assertTrue(log_found, "Expected log for selling with hourly price not found.")
+
+    @patch(PATCH_PATH_SG)
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_not_triggered_before_window_start(self, mock_logging, MockSignalGenerator):
+        mock_sg_instance = MockSignalGenerator.return_value
+
+        current_config = self.sample_config.copy()
+        current_config['strategy']['n_day_high_period'] = 1
+        current_config['strategy']['holding_period_days'] = 1
+        current_config['strategy']['sell_window_start_time'] = "09:00"
+        current_config['strategy']['sell_window_end_time'] = "10:00"
+        current_config['backtesting']['timeframe'] = '1d'
+        current_config['backtesting']['end_date'] = '2023-01-03'
+
+        buy_trigger_daily_ts_utc = pd.Timestamp('2023-01-02 00:00:00', tz='UTC')
+        buy_signal_check_time_utc8 = datetime.strptime(current_config['strategy']['buy_window_start_time'], "%H:%M").time()
+
+        # SELL on 2023-01-03. Daily data timestamp is 00:30 UTC (08:30 UTC+8), which is BEFORE window start.
+        sell_check_daily_ts_utc = pd.Timestamp('2023-01-03 00:30:00', tz='UTC')
+
+        temp_daily_data = self.sample_daily_ohlcv_data.copy()
+        temp_daily_data.loc[temp_daily_data['timestamp'] == pd.Timestamp('2023-01-03', tz='UTC'), 'timestamp'] = sell_check_daily_ts_utc
+
+        original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+            # (Same as in test_sell_triggered_within_window_uses_hourly_price)
+            if timeframe == '1d': data_to_return = temp_daily_data.copy()
+            elif timeframe == '1h': data_to_return = self.sample_hourly_ohlcv_data.copy()
+            else: return pd.DataFrame()
+            if since is not None:
+                since_ts = pd.Timestamp(since, unit='ms', tz='UTC')
+                if timeframe == '1d': data_to_return = data_to_return[data_to_return['timestamp'].dt.normalize() >= since_ts.normalize()]
+                else: data_to_return = data_to_return[data_to_return['timestamp'] >= since_ts]
+            return data_to_return
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = temp_mock_fetch_ohlcv_se
+
+        def check_breakout_side_effect(*args, **kwargs):
+            # (Same as in test_sell_triggered_within_window_uses_hourly_price)
+            dt_utc8_arg = kwargs.get('current_datetime_utc8')
+            if dt_utc8_arg.date() == buy_trigger_daily_ts_utc.date() and dt_utc8_arg.time() == buy_signal_check_time_utc8:
+                return "BUY"
+            return None
+        mock_sg_instance.check_breakout_signal.side_effect = check_breakout_side_effect
+
+        engine = BacktestingEngine(config=current_config, data_fetcher=self.mock_data_fetcher, signal_generator=None)
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = original_fetch_side_effect
+
+        sell_order_call = next((c for c in spy_simulate_order.call_args_list if c.kwargs.get('order_type') == 'SELL'), None)
+        self.assertIsNone(sell_order_call, "SELL order should NOT be simulated as current time is before sell window start")
+
+    @patch(PATCH_PATH_SG)
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_not_triggered_at_or_after_window_end(self, mock_logging, MockSignalGenerator):
+        mock_sg_instance = MockSignalGenerator.return_value
+
+        current_config = self.sample_config.copy()
+        current_config['strategy']['n_day_high_period'] = 1
+        current_config['strategy']['holding_period_days'] = 1
+        current_config['strategy']['sell_window_start_time'] = "09:00"
+        current_config['strategy']['sell_window_end_time'] = "10:00"
+        current_config['backtesting']['timeframe'] = '1d'
+        current_config['backtesting']['end_date'] = '2023-01-03'
+
+        buy_trigger_daily_ts_utc = pd.Timestamp('2023-01-02 00:00:00', tz='UTC')
+        buy_signal_check_time_utc8 = datetime.strptime(current_config['strategy']['buy_window_start_time'], "%H:%M").time()
+
+        # SELL on 2023-01-03. Daily data timestamp is 02:00 UTC (10:00 UTC+8), which is AT window end (exclusive).
+        sell_check_daily_ts_utc = pd.Timestamp('2023-01-03 02:00:00', tz='UTC')
+
+        temp_daily_data = self.sample_daily_ohlcv_data.copy()
+        temp_daily_data.loc[temp_daily_data['timestamp'] == pd.Timestamp('2023-01-03', tz='UTC'), 'timestamp'] = sell_check_daily_ts_utc
+
+        original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+            if timeframe == '1d': data_to_return = temp_daily_data.copy()
+            elif timeframe == '1h': data_to_return = self.sample_hourly_ohlcv_data.copy()
+            else: return pd.DataFrame()
+            if since is not None:
+                since_ts = pd.Timestamp(since, unit='ms', tz='UTC')
+                if timeframe == '1d': data_to_return = data_to_return[data_to_return['timestamp'].dt.normalize() >= since_ts.normalize()]
+                else: data_to_return = data_to_return[data_to_return['timestamp'] >= since_ts]
+            return data_to_return
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = temp_mock_fetch_ohlcv_se
+
+        def check_breakout_side_effect(*args, **kwargs):
+            dt_utc8_arg = kwargs.get('current_datetime_utc8')
+            if dt_utc8_arg.date() == buy_trigger_daily_ts_utc.date() and dt_utc8_arg.time() == buy_signal_check_time_utc8:
+                return "BUY"
+            return None
+        mock_sg_instance.check_breakout_signal.side_effect = check_breakout_side_effect
+
+        engine = BacktestingEngine(config=current_config, data_fetcher=self.mock_data_fetcher, signal_generator=None)
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = original_fetch_side_effect
+
+        sell_order_call = next((c for c in spy_simulate_order.call_args_list if c.kwargs.get('order_type') == 'SELL'), None)
+        self.assertIsNone(sell_order_call, "SELL order should NOT be simulated as current time is at or after sell window end")
+
+    @patch(PATCH_PATH_SG)
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_uses_daily_close_fallback_if_hourly_missing(self, mock_logging, MockSignalGenerator):
+        mock_sg_instance = MockSignalGenerator.return_value
+
+        current_config = self.sample_config.copy()
+        current_config['strategy']['n_day_high_period'] = 1
+        current_config['strategy']['holding_period_days'] = 1
+        current_config['strategy']['sell_window_start_time'] = "09:00"
+        current_config['strategy']['sell_window_end_time'] = "10:00" # Sell price target is 10:00 UTC+8
+        current_config['backtesting']['timeframe'] = '1d'
+        current_config['backtesting']['end_date'] = '2023-01-03'
+
+        buy_trigger_daily_ts_utc = pd.Timestamp('2023-01-02 00:00:00', tz='UTC')
+        buy_signal_check_time_utc8 = datetime.strptime(current_config['strategy']['buy_window_start_time'], "%H:%M").time()
+
+        # SELL on 2023-01-03. Daily data timestamp is 01:30 UTC (09:30 UTC+8) to be within window.
+        sell_trigger_daily_ts_utc = pd.Timestamp('2023-01-03 01:30:00', tz='UTC')
+        daily_close_price_on_sell_day = 122 # From self.sample_daily_ohlcv_data for 2023-01-03
+
+        temp_daily_data = self.sample_daily_ohlcv_data.copy()
+        temp_daily_data.loc[temp_daily_data['timestamp'] == pd.Timestamp('2023-01-03', tz='UTC'), 'timestamp'] = sell_trigger_daily_ts_utc
+        # Update the close price for the modified timestamp row to ensure consistency if needed, though engine uses original row.close
+        temp_daily_data.loc[temp_daily_data['timestamp'] == sell_trigger_daily_ts_utc, 'close'] = daily_close_price_on_sell_day
+
+
+        # Modify hourly data: Remove candles that would satisfy the sell price lookup
+        # Target sell price time: 2023-01-03 10:00 UTC+8 == 02:00 UTC
+        target_hourly_sell_utc = pd.Timestamp('2023-01-03 02:00:00', tz='UTC')
+
+        temp_hourly_data = self.sample_hourly_ohlcv_data.copy()
+        # Remove all hourly candles on or after the target sell time for that day
+        temp_hourly_data = temp_hourly_data[
+            ~( (temp_hourly_data['timestamp'] >= target_hourly_sell_utc) & \
+               (temp_hourly_data['timestamp'].dt.date == target_hourly_sell_utc.date()) )
+        ]
+
+        original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+            if timeframe == '1d': data_to_return = temp_daily_data.copy()
+            elif timeframe == '1h': data_to_return = temp_hourly_data.copy() # Use modified hourly
+            else: return pd.DataFrame()
+            if since is not None:
+                since_ts = pd.Timestamp(since, unit='ms', tz='UTC')
+                if timeframe == '1d': data_to_return = data_to_return[data_to_return['timestamp'].dt.normalize() >= since_ts.normalize()]
+                else: data_to_return = data_to_return[data_to_return['timestamp'] >= since_ts]
+            return data_to_return
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = temp_mock_fetch_ohlcv_se
+
+        def check_breakout_side_effect(*args, **kwargs):
+            dt_utc8_arg = kwargs.get('current_datetime_utc8')
+            if dt_utc8_arg.date() == buy_trigger_daily_ts_utc.date() and dt_utc8_arg.time() == buy_signal_check_time_utc8:
+                return "BUY"
+            return None
+        mock_sg_instance.check_breakout_signal.side_effect = check_breakout_side_effect
+
+        engine = BacktestingEngine(config=current_config, data_fetcher=self.mock_data_fetcher, signal_generator=None)
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = original_fetch_side_effect
+
+        sell_order_call = next((c for c in spy_simulate_order.call_args_list if c.kwargs.get('order_type') == 'SELL'), None)
+        self.assertIsNotNone(sell_order_call, "SELL order should have been simulated (using fallback)")
+
+        sell_kwargs = sell_order_call.kwargs
+        self.assertEqual(sell_kwargs['timestamp'], sell_trigger_daily_ts_utc, "SELL order timestamp mismatch")
+
+        # The engine's fallback uses getattr(row, 'close') where 'row' is from daily_historical_data.
+        # The 'row' corresponds to the original daily data for '2023-01-03 00:00:00 UTC' before we changed its timestamp in temp_daily_data
+        # So, we need the close price from the *original* daily data row that corresponds to the sell day.
+        # The sell_trigger_daily_ts_utc is pd.Timestamp('2023-01-03 01:30:00', tz='UTC')
+        # The engine iterates on temp_daily_data. The row for this timestamp has 'close' = daily_close_price_on_sell_day (122)
+        self.assertEqual(sell_kwargs['price'], daily_close_price_on_sell_day,
+                         "SELL order price should be the daily close price due to fallback")
+
+        log_found = any(
+            "SELL condition: No hourly candle found at or after" in call_args[0][0] and "Falling back to DAILY CLOSE price" in call_args[0][0]
+            for call_args in mock_logging.warning.call_args_list
+        )
+        self.assertTrue(log_found, "Expected log for SELL falling back to daily close not found.")
+
+    @patch(PATCH_PATH_SG)
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_window_times_honored_from_config(self, mock_logging, MockSignalGenerator):
+        mock_sg_instance = MockSignalGenerator.return_value
+
+        # --- Config for this test ---
+        custom_sell_start_str = "10:00"
+        custom_sell_end_str = "11:00" # Sell price target is 11:00 UTC+8
+
+        current_config = self.sample_config.copy()
+        current_config['strategy'] = self.sample_config['strategy'].copy() # Deep copy strategy section
+        current_config['strategy']['n_day_high_period'] = 1
+        current_config['strategy']['holding_period_days'] = 1
+        current_config['strategy']['sell_window_start_time'] = custom_sell_start_str
+        current_config['strategy']['sell_window_end_time'] = custom_sell_end_str
+        current_config['backtesting']['timeframe'] = '1d'
+        current_config['backtesting']['end_date'] = '2023-01-03'
+
+        buy_trigger_daily_ts_utc = pd.Timestamp('2023-01-02 00:00:00', tz='UTC')
+        buy_signal_check_time_utc8 = datetime.strptime(current_config['strategy']['buy_window_start_time'], "%H:%M").time()
+
+        # SELL on 2023-01-03. Daily data timestamp to fall into custom window [10:00-11:00 UTC+8).
+        # e.g., 02:30 UTC -> 10:30 UTC+8.
+        sell_trigger_daily_ts_utc = pd.Timestamp('2023-01-03 02:30:00', tz='UTC')
+
+        temp_daily_data = self.sample_daily_ohlcv_data.copy()
+        temp_daily_data.loc[temp_daily_data['timestamp'] == pd.Timestamp('2023-01-03', tz='UTC'), 'timestamp'] = sell_trigger_daily_ts_utc
+
+        # Hourly price for SELL: At custom sell_window_end_time (11:00 UTC+8 = 03:00 UTC on Jan 3)
+        expected_hourly_sell_price_custom = 123.45
+        target_hourly_sell_utc_custom = pd.Timestamp('2023-01-03 03:00:00', tz='UTC')
+
+        temp_hourly_data = self.sample_hourly_ohlcv_data.copy()
+        # Ensure the specific candle for the custom time exists and has the target open price
+        if target_hourly_sell_utc_custom in temp_hourly_data['timestamp'].values:
+            temp_hourly_data.loc[temp_hourly_data['timestamp'] == target_hourly_sell_utc_custom, 'open'] = expected_hourly_sell_price_custom
+        else:
+            new_row = pd.DataFrame([{'timestamp': target_hourly_sell_utc_custom, 'open': expected_hourly_sell_price_custom, 'high': 124, 'low': 123, 'close': 123.50, 'volume': 50}])
+            temp_hourly_data = pd.concat([temp_hourly_data, new_row]).sort_values(by='timestamp').reset_index(drop=True)
+
+        original_fetch_side_effect = self.mock_data_fetcher.fetch_ohlcv.side_effect
+        def temp_mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None):
+            if timeframe == '1d': data_to_return = temp_daily_data.copy()
+            elif timeframe == '1h': data_to_return = temp_hourly_data.copy() # Use modified hourly
+            else: return pd.DataFrame()
+            if since is not None:
+                since_ts = pd.Timestamp(since, unit='ms', tz='UTC')
+                if timeframe == '1d': data_to_return = data_to_return[data_to_return['timestamp'].dt.normalize() >= since_ts.normalize()]
+                else: data_to_return = data_to_return[data_to_return['timestamp'] >= since_ts]
+            return data_to_return
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = temp_mock_fetch_ohlcv_se
+
+        def check_breakout_side_effect(*args, **kwargs):
+            dt_utc8_arg = kwargs.get('current_datetime_utc8')
+            if dt_utc8_arg.date() == buy_trigger_daily_ts_utc.date() and dt_utc8_arg.time() == buy_signal_check_time_utc8:
+                return "BUY"
+            return None
+        mock_sg_instance.check_breakout_signal.side_effect = check_breakout_side_effect
+
+        engine = BacktestingEngine(config=current_config, data_fetcher=self.mock_data_fetcher, signal_generator=None)
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = original_fetch_side_effect
+
+        sell_order_call = next((c for c in spy_simulate_order.call_args_list if c.kwargs.get('order_type') == 'SELL'), None)
+        self.assertIsNotNone(sell_order_call, "SELL order should have been simulated with custom window times")
+
+        sell_kwargs = sell_order_call.kwargs
+        self.assertEqual(sell_kwargs['timestamp'], sell_trigger_daily_ts_utc, "SELL order timestamp mismatch")
+        self.assertEqual(sell_kwargs['price'], expected_hourly_sell_price_custom,
+                         "SELL order price should be the hourly open price at the custom sell_window_end_time")
+
+        log_found = any(
+            f"Sell window: {custom_sell_start_str} - {custom_sell_end_str} UTC+8." in call_args[0][0]
+            for call_args in mock_logging.info.call_args_list
+        )
+        self.assertTrue(log_found, "Log message with custom sell window times not found.")
 
     @patch(PATCH_PATH_SG)
     @patch('owl.backtesting_engine.engine.logging')
