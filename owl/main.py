@@ -78,7 +78,24 @@ def main():
                 print(f"Error: 'n_day_high_period' in [strategy] config is invalid: {e}.")
                 sys.exit(1)
 
-            signal_generator = SignalGenerator(n_day_high_period=n_period)
+            # Fetch scheduler config for SignalGenerator buy window times
+            scheduler_config = config.get('scheduler', {})
+            try:
+                buy_start_str = scheduler_config['buy_check_time']
+            except KeyError:
+                print("Error: 'buy_check_time' not found in [scheduler] configuration.")
+                sys.exit(1)
+            try:
+                buy_end_str = scheduler_config['buy_execute_time']
+            except KeyError:
+                print("Error: 'buy_execute_time' not found in [scheduler] configuration.")
+                sys.exit(1)
+
+            signal_generator = SignalGenerator(
+                n_day_high_period=n_period,
+                buy_window_start_time_str=buy_start_str,
+                buy_window_end_time_str=buy_end_str
+            )
 
             # Instantiate BacktestingEngine
             # BacktestingEngine __init__ handles critical config validation
