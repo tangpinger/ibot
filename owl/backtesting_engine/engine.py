@@ -7,6 +7,7 @@ import pytz
 # Assuming DataFetcher is in owl.data_fetcher.fetcher
 # from owl.data_fetcher.fetcher import DataFetcher # Placeholder if direct type hint is needed
 # from owl.signal_generator.generator import SignalGenerator # For type hinting if needed, instance is passed
+from owl.signal_generator.generator import SignalGenerator # Make sure this is imported
 from owl.analytics_reporting.reporter import generate_performance_report
 from owl.analytics_reporting.plotter import plot_equity_curve
 # pandas as pd is already imported at the top of the file
@@ -27,28 +28,49 @@ class BacktestingEngine:
         """
         self.config = config
         self.data_fetcher = data_fetcher
-        self.signal_generator = signal_generator
+        # self.signal_generator = signal_generator # Instantiation moved below
 
         # Portfolio and trade logging - Critical backtesting parameters
         try:
             bt_config = self.config['backtesting']
+            strategy_conf = self.config['strategy']
+
             initial_capital = float(bt_config['initial_capital'])
             self.commission_rate = float(bt_config['commission_rate'])
-        except KeyError as e:
-            # More specific error for critical params
-            raise ValueError(f"Error: Missing critical key '{e}' in [backtesting] configuration.") from e
-        except ValueError as e:
-            # More specific error for critical params
-            raise ValueError(f"Error: Invalid numerical format for initial_capital or commission_rate in [backtesting] config: {e}") from e
-        except TypeError: # Handles if self.config['backtesting'] is None or not a dict
-             raise ValueError("Error: [backtesting] configuration section is missing or malformed.")
 
+            n_day_high_period = int(strategy_conf['n_day_high_period'])
+            # self.m_day_low_period removed
+            self.sell_asset_percentage = float(strategy_conf.get('sell_asset_percentage', 1.0)) # Default to 1.0
+            self.holding_period_days = int(strategy_conf.get('holding_period_days', 1)) # Default to 1 day
+
+            buy_window_start_time_str = strategy_conf.get('buy_window_start_time')
+            buy_window_end_time_str = strategy_conf.get('buy_window_end_time')
+            # sell_window_start_time_str and sell_window_end_time_str removed
+
+            if not all([buy_window_start_time_str, buy_window_end_time_str]):
+                raise ValueError("Missing buy_window_start_time or buy_window_end_time in [strategy]")
+
+        except KeyError as e:
+            raise ValueError(f"Error: Missing critical key '{e}' in configuration.") from e
+        except ValueError as e:
+            raise ValueError(f"Error processing configuration values: {e}") from e
+        except TypeError:
+             raise ValueError("Error: Configuration section is missing or malformed.")
+
+        self.signal_generator = SignalGenerator(
+            n_day_high_period=n_day_high_period,
+            buy_window_start_time_str=buy_window_start_time_str,
+            buy_window_end_time_str=buy_window_end_time_str
+            # m_day_low_period and sell window times removed
+        )
 
         self.portfolio = {
             'cash': initial_capital,
             'asset_qty': 0.0,
-            'asset_value': 0.0, # Will be updated based on current price
-            'total_value': initial_capital
+            'asset_value': 0.0,
+            'total_value': initial_capital,
+            'asset_entry_timestamp_utc': None, # New field
+            'asset_entry_price': 0.0          # New field
         }
         self.trades = []
         self.historical_data = None
@@ -102,6 +124,9 @@ class BacktestingEngine:
                     'price': price, 'quantity': quantity, 'commission': commission,
                     'cost': cost
                 })
+                # Record entry timestamp and price
+                self.portfolio['asset_entry_timestamp_utc'] = timestamp
+                self.portfolio['asset_entry_price'] = price
                 print(f"Simulated BUY: {quantity} {symbol} at {price:.2f}. Cost: {cost:.2f}, Comm: {commission:.2f}")
                 return True
             else:
@@ -120,6 +145,9 @@ class BacktestingEngine:
                     'price': price, 'quantity': quantity, 'commission': commission,
                     'proceeds': proceeds
                 })
+                # Reset entry timestamp and price
+                self.portfolio['asset_entry_timestamp_utc'] = None
+                self.portfolio['asset_entry_price'] = 0.0
                 print(f"Simulated SELL: {quantity} {symbol} at {price:.2f}. Proceeds: {proceeds:.2f}, Comm: {commission:.2f}")
                 return True
             else:
@@ -234,91 +262,95 @@ class BacktestingEngine:
         # Main data loop
         for current_idx, row in enumerate(self.historical_data.itertuples(index=False)): # index=False if current_idx is simple enum
             try:
-                # Ensure 'timestamp', 'high', 'close' are actual column names in your DataFrame
-                # Pandas itertuples names fields based on column names. If names have spaces/special chars, access might differ.
+                # Ensure 'timestamp', 'high', 'low', 'close' are actual column names in your DataFrame
                 current_timestamp_utc = getattr(row, 'timestamp')
                 current_day_high = getattr(row, 'high')
+                current_day_low = getattr(row, 'low', None) # Use None if 'low' is not present
                 current_close_price = getattr(row, 'close')
             except AttributeError as e:
                 print(f"Error accessing data in row (index {getattr(row, 'Index', 'N/A')}): {row}. Missing required OHLCV attribute. Details: {e}")
-                print("Make sure historical_data DataFrame has 'timestamp', 'high', and 'close' columns.")
-                # Update portfolio with current close if available, then skip to next iteration
-                if 'close' in row._fields and 'timestamp' in row._fields:
+                print("Make sure historical_data DataFrame has 'timestamp', 'high', 'low', and 'close' columns.")
+                if hasattr(row, 'close') and hasattr(row, 'timestamp'):
                      self._update_portfolio_value(current_price=getattr(row, 'close'), timestamp=getattr(row, 'timestamp'))
                 continue
 
-            # Signal Generation
-            signal = None
-            if current_idx < n_period:
-                # print(f"Timestamp {current_timestamp_utc}: Not enough data for signal generation (need {n_period} periods, have {current_idx}).")
-                pass # Not enough data yet
-            else:
-                historical_data_for_signal = self.historical_data.iloc[:current_idx] # Data up to, but NOT including, the current day
+            if current_day_low is None:
+                logging.warning(f"Timestamp {current_timestamp_utc}: 'low' price data is missing. Skipping sell signal check for this period.")
+                # Update portfolio and continue, as sell signal cannot be evaluated
+                self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc)
+                continue
 
-                # Convert current_timestamp_utc to UTC+8 for the signal generator
-                # Assuming current_timestamp_utc is a pandas Timestamp (often timezone-naive from CSVs or some fetchers)
-                try:
-                    if current_timestamp_utc.tzinfo is None:
-                        current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
-                    else: # If already timezone-aware (e.g., UTC)
-                        current_datetime_utc8 = current_timestamp_utc.tz_convert('Asia/Shanghai')
-
-                    # Adjust current_datetime_utc8 time based on buy_check_time from config
+            # BUY Signal Logic (remains largely the same)
+            buy_signal = None
+            if self.portfolio['asset_qty'] == 0: # Only check for buy if we don't hold assets
+                if current_idx >= n_period:
+                    historical_data_for_signal = self.historical_data.iloc[:current_idx]
                     try:
-                        buy_check_time_str = self.config['scheduler']['buy_check_time']
-                        buy_check_hour, buy_check_minute = map(int, buy_check_time_str.split(':'))
-                        current_datetime_utc8 = current_datetime_utc8.replace(hour=buy_check_hour, minute=buy_check_minute, second=0, microsecond=0)
-                    except KeyError:
-                        logging.warning("Config `[scheduler][buy_check_time]` not found. Using original OHLCV data time for signal generation.")
-                    except ValueError:
-                        logging.warning(f"Malformed `buy_check_time` string: '{buy_check_time_str}'. Expected HH:MM format. Using original OHLCV data time.")
-                    except Exception as e: # Catch any other unexpected errors during time adjustment
-                        logging.warning(f"Error adjusting time with buy_check_time: {e}. Using original OHLCV data time.")
+                        if current_timestamp_utc.tzinfo is None:
+                            current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
+                        else:
+                            current_datetime_utc8 = current_timestamp_utc.tz_convert('Asia/Shanghai')
 
-                except Exception as e:
-                    print(f"Error converting timestamp {current_timestamp_utc} to UTC+8: {e}")
-                    current_datetime_utc8 = None # Mark as unavailable for signal generation
-
-                # Generate Signal
-                if current_datetime_utc8: # Proceed only if timestamp conversion was successful
-                    try:
-                        signal = self.signal_generator.check_breakout_signal(
+                        buy_signal = self.signal_generator.check_breakout_signal(
                             daily_ohlcv_data=historical_data_for_signal,
                             current_day_high=current_day_high,
                             current_datetime_utc8=current_datetime_utc8
                         )
                     except Exception as e:
-                        print(f"Error during signal generation at {current_timestamp_utc}: {e}")
-                        signal = None # Ensure signal is None on error
-                else:
-                    signal = None # Skip signal generation
+                        logging.error(f"Error during BUY signal generation prep at {current_timestamp_utc}: {e}")
+                        buy_signal = None
 
-            # Process Signal & Execute Order
-            if signal == "BUY":
-                cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
-                if current_close_price > 0:
-                    quantity_to_buy = cash_to_spend_on_buy / current_close_price
-                    if quantity_to_buy > 0:
-                        print(f"Timestamp {current_timestamp_utc}: BUY signal received. Attempting to buy {quantity_to_buy:.4f} {symbol} at {current_close_price:.2f}")
+            # Process BUY Signal
+            if buy_signal == "BUY":
+                # Ensure we are not already holding assets before buying
+                if self.portfolio['asset_qty'] == 0:
+                    cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
+                    if current_close_price > 0:
+                        quantity_to_buy = cash_to_spend_on_buy / current_close_price
+                        if quantity_to_buy > 0:
+                            logging.info(f"Timestamp {current_timestamp_utc}: BUY signal. Attempting to buy {quantity_to_buy:.4f} {symbol} at {current_close_price:.2f}")
+                            self._simulate_order(
+                                timestamp=current_timestamp_utc, order_type='BUY',
+                                symbol=symbol, price=current_close_price, quantity=quantity_to_buy
+                            )
+                else:
+                    logging.info(f"Timestamp {current_timestamp_utc}: BUY signal received, but already holding assets. Skipping buy.")
+
+
+            # SELL Logic (Holding Period Based)
+            # This logic is independent of SignalGenerator and checked on each iteration if assets are held.
+            if self.portfolio['asset_qty'] > 0 and self.portfolio.get('asset_entry_timestamp_utc') is not None:
+                entry_ts_utc = self.portfolio['asset_entry_timestamp_utc']
+                # Ensure current_timestamp_utc and entry_ts_utc are pandas Timestamps and UTC localized
+                if not isinstance(entry_ts_utc, pd.Timestamp):
+                    entry_ts_utc = pd.Timestamp(entry_ts_utc, tz='UTC')
+                if current_timestamp_utc.tzinfo is None:
+                    current_ts_utc_localized = current_timestamp_utc.tz_localize('UTC')
+                else:
+                    current_ts_utc_localized = current_timestamp_utc.tz_convert('UTC')
+
+                # Calculate days passed. Sell on the day *after* the holding period.
+                # E.g., hold_period=1 day. Buy Mon. Hold Tue. Sell Wed.
+                # Mon (day 0). Tue (day 1). Wed (day 2). Sell if days_passed >= hold_period + 1
+                # If hold_period=0 days. Buy Mon. Sell Tue. Sell if days_passed >= 1
+                days_passed = (current_ts_utc_localized.normalize() - entry_ts_utc.normalize()).days
+
+                # Target sell time: 10 AM Beijing Time on the sell day
+                current_dt_utc8_for_sell_check = current_ts_utc_localized.tz_convert('Asia/Shanghai')
+
+                is_target_sell_day = days_passed >= self.holding_period_days
+                is_target_sell_hour = current_dt_utc8_for_sell_check.hour == 10
+
+                if is_target_sell_day and is_target_sell_hour:
+                    logging.info(f"Timestamp {current_timestamp_utc}: Holding period sell condition met. Holding period: {self.holding_period_days} days. Days passed: {days_passed}. Current time UTC+8: {current_dt_utc8_for_sell_check.strftime('%Y-%m-%d %H:%M')}.")
+                    quantity_to_sell = self.portfolio['asset_qty'] * self.sell_asset_percentage
+                    if quantity_to_sell > 0:
+                        logging.info(f"Attempting to SELL {quantity_to_sell:.4f} {symbol} at {current_close_price:.2f}")
                         self._simulate_order(
-                            timestamp=current_timestamp_utc,
-                            order_type='BUY',
-                            symbol=symbol,
-                            price=current_close_price,
-                            quantity=quantity_to_buy
+                            timestamp=current_timestamp_utc, order_type='SELL',
+                            symbol=symbol, price=current_close_price, quantity=quantity_to_sell
                         )
-                    else:
-                        print(f"Timestamp {current_timestamp_utc}: BUY signal. Quantity to buy is zero (Cash: {self.portfolio['cash']:.2f}, Price: {current_close_price:.2f}).")
-                else:
-                    print(f"Timestamp {current_timestamp_utc}: BUY signal. Price is zero or negative ({current_close_price:.2f}), cannot calculate quantity.")
 
-            # TODO: Implement SELL logic if signal == "SELL" or other conditions met (e.g., stop-loss, take-profit).
-            # Example:
-            # elif signal == "SELL" and self.portfolio['asset_qty'] > 0:
-            #     quantity_to_sell = self.portfolio['asset_qty'] # Sell all
-            #     self._simulate_order(timestamp=current_timestamp_utc, order_type='SELL', symbol=symbol, price=current_close_price, quantity=quantity_to_sell)
-
-            # Update portfolio value at the end of the period, after any trades for this period
             self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc)
 
         print("\nBacktest simulation complete.")

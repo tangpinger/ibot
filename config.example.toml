@@ -10,6 +10,10 @@ okx_password = "YOUR_OKX_API_PASSPHRASE" # For live trading if required by API v
 n_day_high_period = 20 # Value of N for N-day high breakout strategy
 buy_cash_percentage = 0.8 # Spend 80% of current cash on a BUY signal
 risk_free_rate = 0.0 # Annual risk-free rate for Sharpe Ratio calculation
+sell_asset_percentage = 1.0
+buy_window_start_time = "15:00"
+buy_window_end_time = "16:00"
+holding_period_days = 1
 # sell_params, stop_loss, take_profit can be added here later
 
 [mode]
@@ -18,9 +22,7 @@ dry_run = true # Set to false for live trading
 [scheduler]
 # Times are in UTC+8 (Asia/Shanghai)
 daily_data_fetch_time = "10:00"
-buy_check_time = "15:55" # Start checking for buy signals
 buy_execute_time = "16:00" # Execute buy if signal present
-sell_check_time = "09:50" # Start checking for sell
 sell_execute_time = "09:55" # Execute sell
 
 [logging]
@@ -29,7 +31,7 @@ log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 [backtesting]
 symbol = "BTC-USDT-SWAP" # Or "BTC/USDT" for spot, check CCXT for correct ID for data fetching
-timeframe = "1d" # Default timeframe for OHLCV data
+timeframe = "1h" # Default timeframe for OHLCV data
 start_date = "2022-01-01"
 end_date = "2023-01-01"
 initial_capital = 10000.0 # USD or equivalent in quote currency
