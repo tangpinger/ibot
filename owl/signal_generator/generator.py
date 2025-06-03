@@ -53,20 +53,48 @@ class SignalGenerator:
         Returns:
             str or None: "BUY" if a buy signal is generated, None otherwise.
         """
-        # 1. Validate input DataFrame
-        if not isinstance(daily_ohlcv_data, pd.DataFrame) or daily_ohlcv_data.empty:
-            print("SignalGenerator: OHLCV data is empty or not a DataFrame. No signal.")
+        # --- Start: Resampling Logic ---
+        data_for_processing = daily_ohlcv_data # Default to original data
+
+        if daily_ohlcv_data is not None and not daily_ohlcv_data.empty and 'timestamp' in daily_ohlcv_data.columns:
+            # Ensure 'timestamp' is datetime
+            # Making a copy to avoid SettingWithCopyWarning if daily_ohlcv_data is a slice
+            df_copy = daily_ohlcv_data.copy()
+            df_copy['timestamp'] = pd.to_datetime(df_copy['timestamp'])
+
+            if len(df_copy) >= 2:
+                time_diff = df_copy['timestamp'].iloc[1] - df_copy['timestamp'].iloc[0]
+                if time_diff < pd.Timedelta(days=1):
+                    logging.info("SignalGenerator: Detected sub-daily data. Resampling to daily.")
+                    # Set timestamp as index for resampling
+                    resampled_data = df_copy.set_index('timestamp').resample('D').agg(
+                        {'high': 'max'} # Add other aggregations if needed, e.g., open, low, close
+                    ).reset_index()
+                    # Ensure 'timestamp' is at the start of the day (midnight)
+                    resampled_data['timestamp'] = resampled_data['timestamp'].dt.normalize()
+                    data_for_processing = resampled_data
+                else:
+                    data_for_processing = df_copy # Use the copy with corrected datetime type
+            elif len(df_copy) == 1: # If only one row, use it as is (with corrected datetime type)
+                 data_for_processing = df_copy
+            # If df_copy is empty, data_for_processing remains daily_ohlcv_data (which will be caught by later checks)
+
+        # --- End: Resampling Logic ---
+
+        # 1. Validate input DataFrame (using data_for_processing)
+        if not isinstance(data_for_processing, pd.DataFrame) or data_for_processing.empty:
+            print("SignalGenerator: OHLCV data is empty or not a DataFrame (after potential resampling). No signal.")
             return None
-        if not {'high', 'timestamp'}.issubset(daily_ohlcv_data.columns):
-            print("SignalGenerator: OHLCV data must contain 'high' and 'timestamp' columns. No signal.")
+        if not {'high', 'timestamp'}.issubset(data_for_processing.columns):
+            print("SignalGenerator: OHLCV data (after potential resampling) must contain 'high' and 'timestamp' columns. No signal.")
             return None
-        if len(daily_ohlcv_data) < self.n:
-            print(f"SignalGenerator: Not enough historical data ({len(daily_ohlcv_data)} days) to calculate {self.n}-day high. Need at least {self.n} days. No signal.")
+        if len(data_for_processing) < self.n:
+            print(f"SignalGenerator: Not enough historical data ({len(data_for_processing)} days after potential resampling) to calculate {self.n}-day high. Need at least {self.n} days. No signal.")
             return None
 
         # 2. Calculate N-day high from historical data (excluding 'today')
         # Ensure data is sorted by timestamp, oldest to newest
-        historical_data = daily_ohlcv_data.sort_values(by='timestamp')
+        historical_data = data_for_processing.sort_values(by='timestamp')
 
         # Select the N most recent days from the *historical* data provided
         n_day_data = historical_data.tail(self.n)
@@ -178,5 +206,56 @@ if __name__ == "__main__":
     signal_tuesday = sg.check_breakout_signal(historical_df, current_high_price, tuesday_buy_datetime)
     logging.info(f"Signal for Scenario 6: {signal_tuesday}")
     assert signal_tuesday == "BUY"
+
+    # --- Resampling Tests ---
+    print("\n--- Scenario 7: Hourly data needing resampling ---")
+    # Create hourly historical data for a few days
+    hourly_data_list = []
+    # Simulate 3 days of hourly data, 24 hours each. N=20, so need more than 20 distinct days after resampling.
+    # Let's make sure we have enough days for an N=5 test after resampling.
+    # 5 days of hourly data
+    for day_offset in range(25, 20, -1): # 5 days: 25, 24, 23, 22, 21 days ago
+        for hour_offset in range(23, -1, -1): # 00:00 to 23:00 for each day
+            ts = base_date - pd.Timedelta(days=day_offset, hours=hour_offset)
+            # Make highs such that the daily max is easily predictable
+            # e.g., day X has max high of 100+X
+            hourly_data_list.append({'timestamp': ts, 'high': 100 + day_offset - (hour_offset/24.0)}) # decreasing high within the day
+
+    hourly_historical_df = pd.DataFrame(hourly_data_list)
+    # Make N smaller for this specific test to simplify data creation, e.g., N=3 (needs 3 daily records)
+    sg_resample_test = SignalGenerator(n_day_high_period=3,
+                                       buy_window_start_time_str=buy_start_str,
+                                       buy_window_end_time_str=buy_end_str)
+
+    # Expected daily highs:
+    # Day 23 ago: max high around 100+23
+    # Day 22 ago: max high around 100+22
+    # Day 21 ago: max high around 100+21
+    # N=3 high should be max(100+23, 100+22, 100+21) = 123 (approximately, due to hour_offset/24.0 part)
+    # Let's check exact values:
+    # For day_offset=23, max high is 100+23 = 123 (when hour_offset = 0)
+    # For day_offset=22, max high is 100+22 = 122
+    # For day_offset=21, max high is 100+21 = 121
+    # So, 3-day high from these should be 123.
+
+    current_high_resample = 124 # Breakout
+    # Use a valid buy datetime for this test
+    signal_resample = sg_resample_test.check_breakout_signal(hourly_historical_df, current_high_resample, valid_buy_datetime)
+    logging.info(f"Signal for Scenario 7 (Resampling): {signal_resample}")
+    assert signal_resample == "BUY" # Expecting a BUY signal after resampling
+
+    # Check if the number of rows in data_for_processing inside the call was indeed reduced to daily
+    # This requires either inspecting logs or modifying the function to return more info (not ideal for now)
+    # For now, we rely on the logging and the fact that the N-day high calculation would be different.
+
+    print("\n--- Scenario 8: Daily data, no resampling needed (using original sg with N=20) ---")
+    # Re-use historical_df which is already daily
+    # N_day_high for original daily data (N=20)
+    n_day_high_daily_orig = historical_df.tail(N)['high'].max()
+    current_high_daily_no_resample = n_day_high_daily_orig + 1 # Breakout
+    signal_daily_no_resample = sg.check_breakout_signal(historical_df, current_high_daily_no_resample, valid_buy_datetime)
+    logging.info(f"Signal for Scenario 8 (Daily, no resampling): {signal_daily_no_resample}")
+    assert signal_daily_no_resample == "BUY"
+
 
     print("\n--- SignalGenerator (Buy Only) Test Complete ---")
