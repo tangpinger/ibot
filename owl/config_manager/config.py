@@ -3,9 +3,10 @@ import os
 from pathlib import Path
 
 CONFIG_FILE_NAME = "config.toml"
+LOCAL_CONFIG_FILE_NAME = "config.local.toml"
 # Assuming the script is run from the root of the project or owl/main.py is the entry point
 # Adjust if necessary, e.g., if scripts are run from within module directories
-CONFIG_FILE_PATH = Path(__file__).resolve().parent.parent / CONFIG_FILE_NAME # Should point to project root/config.toml
+# CONFIG_FILE_PATH = Path(__file__).resolve().parent.parent / CONFIG_FILE_NAME # Should point to project root/config.toml
 
 # In a real scenario, you might want to search in a few locations:
 # 1. Current working directory
@@ -24,6 +25,7 @@ CONFIG_FILE_PATH = Path(__file__).resolve().parent.parent / CONFIG_FILE_NAME # S
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_FILE_PATH = PROJECT_ROOT / CONFIG_FILE_NAME
+LOCAL_CONFIG_FILE_PATH = PROJECT_ROOT / LOCAL_CONFIG_FILE_NAME
 
 
 class ConfigError(Exception):
@@ -42,14 +44,26 @@ def load_config():
     Raises:
         ConfigError: If the config file is not found or cannot be parsed.
     """
-    if not CONFIG_FILE_PATH.exists():
+    path_to_load = None
+    chosen_config_name = ""
+
+    if LOCAL_CONFIG_FILE_PATH.exists():
+        path_to_load = LOCAL_CONFIG_FILE_PATH
+        chosen_config_name = LOCAL_CONFIG_FILE_NAME
+        print(f"Using local configuration: {chosen_config_name}")
+    elif CONFIG_FILE_PATH.exists():
+        path_to_load = CONFIG_FILE_PATH
+        chosen_config_name = CONFIG_FILE_NAME
+        print(f"Using main configuration: {chosen_config_name}")
+    else:
         raise ConfigError(
-            f"Configuration file '{CONFIG_FILE_NAME}' not found at {CONFIG_FILE_PATH}. "
-            f"Please copy 'config.example.toml' to '{CONFIG_FILE_NAME}' and fill in your details."
+            f"Configuration file not found. Looked for '{LOCAL_CONFIG_FILE_NAME}' at {LOCAL_CONFIG_FILE_PATH} "
+            f"and '{CONFIG_FILE_NAME}' at {CONFIG_FILE_PATH}. "
+            f"Please ensure one of them exists or copy 'config.example.toml' to '{CONFIG_FILE_NAME}' or '{LOCAL_CONFIG_FILE_NAME}' and fill in your details."
         )
 
     try:
-        with open(CONFIG_FILE_PATH, 'r') as f:
+        with open(path_to_load, 'r') as f:
             config = toml.load(f)
 
         # Ensure strategy section and its specific keys exist with defaults
@@ -60,41 +74,98 @@ def load_config():
 
         return config
     except toml.TomlDecodeError as e:
-        raise ConfigError(f"Error decoding '{CONFIG_FILE_NAME}': {e}")
+        raise ConfigError(f"Error decoding '{chosen_config_name}': {e}")
     except Exception as e:
-        raise ConfigError(f"An unexpected error occurred while loading '{CONFIG_FILE_NAME}': {e}")
+        raise ConfigError(f"An unexpected error occurred while loading '{chosen_config_name}': {e}")
 
 # Example of how to use it (optional, for testing within this file)
 if __name__ == "__main__":
+    # Define paths for dummy configs
+    dummy_config_regular_path = PROJECT_ROOT / "config.toml"
+    dummy_config_local_path = PROJECT_ROOT / "config.local.toml"
+    created_files = []
+
     try:
-        # To test this, you'd need a config.toml in the project root
-        # Create a dummy one if it doesn't exist for testing
-        if not CONFIG_FILE_PATH.exists():
-            dummy_config_path = PROJECT_ROOT / "config.toml"
-            with open(dummy_config_path, 'w') as cf:
-                cf.write("""
+        print("\n--- Testing with no config files ---")
+        # Ensure no config files exist for this test
+        if dummy_config_regular_path.exists(): os.remove(dummy_config_regular_path)
+        if dummy_config_local_path.exists(): os.remove(dummy_config_local_path)
+        try:
+            load_config()
+        except ConfigError as e:
+            print(f"Caught expected error: {e}")
+
+        print("\n--- Testing with config.toml only ---")
+        with open(dummy_config_regular_path, 'w') as cf:
+            cf.write("""
+[settings]
+source = "config.toml"
 [mode]
 dry_run = true
 [logging]
-log_level = "DEBUG"
-log_file = "test_bot.log"
-                """)
-            print(f"Created dummy config at {dummy_config_path} for testing.")
-
+log_level = "INFO"
+            """)
+        created_files.append(dummy_config_regular_path)
+        print(f"Created dummy {CONFIG_FILE_NAME} for testing.")
         config_settings = load_config()
-        print("Configuration loaded successfully!")
-        print(f"Dry run mode: {config_settings.get('mode', {}).get('dry_run')}")
-        print(f"Log level: {config_settings.get('logging', {}).get('log_level')}")
-        # Test new strategy config
-        strategy_settings = config_settings.get('strategy', {})
-        print(f"Sell window start: {strategy_settings.get('sell_window_start_time')}")
-        print(f"Sell window end: {strategy_settings.get('sell_window_end_time')}")
+        print(f"Loaded settings: {config_settings.get('settings')}")
+        assert config_settings.get('settings', {}).get('source') == "config.toml"
+
+        print("\n--- Testing with config.local.toml only ---")
+        if dummy_config_regular_path.exists(): os.remove(dummy_config_regular_path) # remove regular
+        with open(dummy_config_local_path, 'w') as cf:
+            cf.write("""
+[settings]
+source = "config.local.toml"
+[mode]
+dry_run = false
+[logging]
+log_level = "DEBUG"
+            """)
+        created_files.append(dummy_config_local_path)
+        print(f"Created dummy {LOCAL_CONFIG_FILE_NAME} for testing.")
+        config_settings = load_config()
+        print(f"Loaded settings: {config_settings.get('settings')}")
+        assert config_settings.get('settings', {}).get('source') == "config.local.toml"
+
+        print("\n--- Testing with both config.toml and config.local.toml (local should be prioritized) ---")
+        with open(dummy_config_regular_path, 'w') as cf: # recreate regular
+            cf.write("""
+[settings]
+source = "config.toml"
+[mode]
+dry_run = true
+[logging]
+log_level = "INFO"
+            """)
+        # local_config already exists and should be prioritized
+        config_settings = load_config()
+        print(f"Loaded settings: {config_settings.get('settings')}")
+        assert config_settings.get('settings', {}).get('source') == "config.local.toml"
+        assert config_settings.get('logging', {}).get('log_level') == "DEBUG"
 
 
-        # Clean up dummy config if created
-        if 'dummy_config_path' in locals() and dummy_config_path.exists():
-             os.remove(dummy_config_path)
-             print(f"Removed dummy config at {dummy_config_path}.")
+        print("\nAll configuration loading tests passed!")
+        print(f"Dry run mode from final test: {config_settings.get('mode', {}).get('dry_run')}")
+        print(f"Log level from final test: {config_settings.get('logging', {}).get('log_level')}")
+        strategy_settings = config_settings.get('strategy', {}) # Ensure this still works
+        print(f"Sell window start (default): {strategy_settings.get('sell_window_start_time')}")
+        print(f"Sell window end (default): {strategy_settings.get('sell_window_end_time')}")
 
     except ConfigError as err:
         print(f"Configuration Error: {err}")
+    except AssertionError as ae:
+        print(f"Test Assertion Error: {ae}")
+    finally:
+        # Clean up dummy configs
+        for f_path in created_files:
+            if f_path.exists():
+                os.remove(f_path)
+                print(f"Removed dummy config at {f_path}.")
+        # Ensure local is removed if it wasn't in created_files list during a specific test run
+        if dummy_config_local_path.exists():
+             os.remove(dummy_config_local_path)
+             print(f"Removed dummy config at {dummy_config_local_path}.")
+        if dummy_config_regular_path.exists(): # Just in case
+            os.remove(dummy_config_regular_path)
+            print(f"Removed dummy config at {dummy_config_regular_path}.")
