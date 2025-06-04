@@ -567,6 +567,13 @@ class BacktestingEngine:
 
                 # Generate dynamic plot filename
                 bt_config_for_plot = self.config.get('backtesting', {})
+                symbol_for_fn = bt_config_for_plot.get('symbol', 'unknownsymbol')
+                strategy_config_for_fn = self.config.get('strategy', {})
+                n_day_high_period_for_fn = strategy_config_for_fn.get('n_day_high_period', 'unknownperiod')
+
+                # Format symbol
+                formatted_symbol_for_fn = str(symbol_for_fn).replace('/', '_').lower()
+
                 start_date_str_plot = bt_config_for_plot.get('start_date', 'unknownstart')
                 end_date_str_plot = bt_config_for_plot.get('end_date', 'unknownend')
 
@@ -585,7 +592,7 @@ class BacktestingEngine:
                 except ValueError:
                     print(f"Warning: Could not parse end_date '{end_date_str_plot}' for plot filename. Using default.")
 
-                plot_output_filename = f"backtest_equity_curve_{start_time_str_fn}_{end_time_str_fn}.png"
+                plot_output_filename = f"{formatted_symbol_for_fn}_{n_day_high_period_for_fn}_backtest_equity_curve_{start_time_str_fn}_{end_time_str_fn}.png"
                 print(f"Generated plot filename: {plot_output_filename}")
 
                 plot_success = plot_equity_curve(
