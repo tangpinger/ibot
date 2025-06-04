@@ -36,216 +36,180 @@ class SignalGenerator:
         except ValueError:
             logging.error(f"Invalid format for buy_window_end_time_str: '{buy_window_end_time_str}'. Expected HH:MM. Buy window check will be disabled.")
 
-    def check_breakout_signal(self, daily_ohlcv_data, current_day_high, current_datetime_utc8):
+    def check_breakout_signal(self, hourly_data_for_24h_lookback, daily_data_for_n_day_high, current_datetime_utc8):
         """
-        Checks for an N-day high breakout buy signal.
+        Checks for an N-day high breakout buy signal using 24h lookback high and N-day historical high.
 
         Args:
-            daily_ohlcv_data (pd.DataFrame): DataFrame with historical daily OHLCV data.
-                                             Must contain 'high' and 'timestamp' columns.
-                                             The 'timestamp' should be datetime objects (preferably UTC for consistency,
-                                             or at least timezone-aware if timezone conversions are needed later).
-                                             This data should be for *days before the current day* to calculate N-day high.
-            current_day_high (float): The highest price reached on the current trading day so far.
+            hourly_data_for_24h_lookback (pd.DataFrame): DataFrame with hourly OHLCV data for the last 24 hours.
+                                                         Must contain a 'high' column.
+            daily_data_for_n_day_high (pd.DataFrame): DataFrame with historical daily OHLCV data
+                                                      for calculating N-day high. Must contain 'high' and 'timestamp' columns.
+                                                      Timestamps should be sorted (most recent last).
             current_datetime_utc8 (datetime): The current date and time in UTC+8 (Beijing time).
                                               Used to check if it's a valid buy day/time.
 
         Returns:
             str or None: "BUY" if a buy signal is generated, None otherwise.
         """
-        # --- Start: Resampling Logic ---
-        data_for_processing = daily_ohlcv_data # Default to original data
-
-        if daily_ohlcv_data is not None and not daily_ohlcv_data.empty and 'timestamp' in daily_ohlcv_data.columns:
-            # Ensure 'timestamp' is datetime
-            # Making a copy to avoid SettingWithCopyWarning if daily_ohlcv_data is a slice
-            df_copy = daily_ohlcv_data.copy()
-            df_copy['timestamp'] = pd.to_datetime(df_copy['timestamp'])
-
-            if len(df_copy) >= 2:
-                time_diff = df_copy['timestamp'].iloc[1] - df_copy['timestamp'].iloc[0]
-                if time_diff < pd.Timedelta(days=1):
-                    logging.info("SignalGenerator: Detected sub-daily data. Resampling to daily.")
-                    # Set timestamp as index for resampling
-                    resampled_data = df_copy.set_index('timestamp').resample('D').agg(
-                        {'high': 'max'} # Add other aggregations if needed, e.g., open, low, close
-                    ).reset_index()
-                    # Ensure 'timestamp' is at the start of the day (midnight)
-                    resampled_data['timestamp'] = resampled_data['timestamp'].dt.normalize()
-                    data_for_processing = resampled_data
-                else:
-                    data_for_processing = df_copy # Use the copy with corrected datetime type
-            elif len(df_copy) == 1: # If only one row, use it as is (with corrected datetime type)
-                 data_for_processing = df_copy
-            # If df_copy is empty, data_for_processing remains daily_ohlcv_data (which will be caught by later checks)
-
-        # --- End: Resampling Logic ---
-
-        # 1. Validate input DataFrame (using data_for_processing)
-        if not isinstance(data_for_processing, pd.DataFrame) or data_for_processing.empty:
-            print("SignalGenerator: OHLCV data is empty or not a DataFrame (after potential resampling). No signal.")
+        # 1. Input Validation for hourly_data_for_24h_lookback
+        if not isinstance(hourly_data_for_24h_lookback, pd.DataFrame) or hourly_data_for_24h_lookback.empty:
+            logging.warning("SignalGenerator: Hourly data for 24h lookback is empty or not a DataFrame. No signal.")
             return None
-        if not {'high', 'timestamp'}.issubset(data_for_processing.columns):
-            print("SignalGenerator: OHLCV data (after potential resampling) must contain 'high' and 'timestamp' columns. No signal.")
-            return None
-        if len(data_for_processing) < self.n:
-            print(f"SignalGenerator: Not enough historical data ({len(data_for_processing)} days after potential resampling) to calculate {self.n}-day high. Need at least {self.n} days. No signal.")
+        if 'high' not in hourly_data_for_24h_lookback.columns:
+            logging.warning("SignalGenerator: Hourly data for 24h lookback must contain 'high' column. No signal.")
             return None
 
-        # 2. Calculate N-day high from historical data (excluding 'today')
-        # Ensure data is sorted by timestamp, oldest to newest
-        historical_data = data_for_processing.sort_values(by='timestamp')
+        # 2. Input Validation for daily_data_for_n_day_high
+        if not isinstance(daily_data_for_n_day_high, pd.DataFrame) or daily_data_for_n_day_high.empty:
+            logging.warning("SignalGenerator: Daily data for N-day high is empty or not a DataFrame. No signal.")
+            return None
+        if not {'high', 'timestamp'}.issubset(daily_data_for_n_day_high.columns):
+            logging.warning("SignalGenerator: Daily data for N-day high must contain 'high' and 'timestamp' columns. No signal.")
+            return None
+        if len(daily_data_for_n_day_high) < self.n:
+            logging.warning(f"SignalGenerator: Not enough historical daily data ({len(daily_data_for_n_day_high)} days) to calculate {self.n}-day high. Need at least {self.n} days. No signal.")
+            return None
 
-        # Select the N most recent days from the *historical* data provided
-        n_day_data = historical_data.tail(self.n)
+        # 3. Calculate high_over_24h_lookback
+        high_over_24h_lookback = hourly_data_for_24h_lookback['high'].max()
+        logging.info(f"SignalGenerator: Calculated 24h lookback high: {high_over_24h_lookback}")
+
+        # 4. Calculate n_day_high_value
+        # Assuming daily_data_for_n_day_high is already sorted by timestamp, most recent last.
+        # If not, uncomment: daily_data_for_n_day_high = daily_data_for_n_day_high.sort_values(by='timestamp')
+        n_day_data = daily_data_for_n_day_high.tail(self.n) # Select the most recent N days
         n_day_high_value = n_day_data['high'].max()
+        logging.info(f"SignalGenerator: Calculated {self.n}-day historical high: {n_day_high_value} from {len(n_day_data)} records.")
 
-        print(f"SignalGenerator: Calculated {self.n}-day high (from previous days): {n_day_high_value}")
-        print(f"SignalGenerator: Current day's high for comparison: {current_day_high}")
+        # 5. Breakout Condition
+        breakout_occurred = high_over_24h_lookback > n_day_high_value
+        if not breakout_occurred:
+            logging.info(f"SignalGenerator: No breakout. 24h lookback high {high_over_24h_lookback} <= {self.n}-day historical high {n_day_high_value}.")
+            return None
+        logging.info(f"SignalGenerator: Breakout detected! 24h lookback high {high_over_24h_lookback} > {self.n}-day historical high {n_day_high_value}.")
 
-        # 3. Check for breakout
-        breakout_occurred = current_day_high > n_day_high_value
-        if breakout_occurred:
-            print(f"SignalGenerator: Breakout detected! Current high {current_day_high} > {self.n}-day high {n_day_high_value}.")
-        else:
-            # print(f"SignalGenerator: No breakout. Current high {current_day_high} <= {self.n}-day high {n_day_high_value}.")
-            return None # No breakout, no further checks needed
-
-        # 4. Check if it's a valid buy day and time (as per strategy)
+        # 6. Valid Buy Day/Time Check (existing logic)
         # Valid buy days: Friday (4), Monday (0), Tuesday (1) (datetime.weekday())
-        # Valid buy time: Close to 4 PM (16:00) Beijing Time
+        # Valid buy time: Close to 4 PM (16:00) Beijing Time (original logic, can be refined if start/end times are used)
         day_of_week = current_datetime_utc8.weekday() # Monday is 0 and Sunday is 6
-        current_time_utc8 = current_datetime_utc8.time()
+        # current_time_utc8_timeobj = current_datetime_utc8.time() # Not directly used in this version of day/time check
 
         is_valid_buy_day = day_of_week in [0, 1, 4] # Mon, Tue, Fri
 
         if not is_valid_buy_day:
-            print(f"SignalGenerator: Breakout occurred, but today ({current_datetime_utc8.strftime('%A')}) is not a valid buy day (Mon, Tue, Fri).")
+            logging.info(f"SignalGenerator: Breakout occurred, but today ({current_datetime_utc8.strftime('%A')}) is not a valid buy day (Mon, Tue, Fri).")
             return None
 
-        print(f"SignalGenerator: BUY signal generated! Breakout confirmed on a valid buy day ({current_datetime_utc8.strftime('%A')}).")
+        # TODO: Add buy window check if self.buy_window_start_time and self.buy_window_end_time are valid
+        # if self.buy_window_start_time and self.buy_window_end_time:
+        #     if not (self.buy_window_start_time <= current_time_utc8_timeobj <= self.buy_window_end_time):
+        #         logging.info(f"SignalGenerator: Breakout on valid day, but current time {current_time_utc8_timeobj.strftime('%H:%M:%S')} is outside buy window [{self.buy_window_start_str}-{self.buy_window_end_str}].")
+        #         return None
+
+        logging.info(f"SignalGenerator: BUY signal generated! Breakout confirmed on a valid buy day ({current_datetime_utc8.strftime('%A')}).")
         return "BUY"
 
 # Example of how to use it (optional, for testing within this file)
 if __name__ == "__main__":
-    print("--- Testing SignalGenerator ---")
+    print("--- Testing SignalGenerator (New Method Signature) ---")
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # Create dummy historical data (ensure 'timestamp' is datetime-like)
-    # Timestamps should represent the OPEN time of the daily candle (e.g., 00:00 UTC)
-    base_date = datetime(2023, 10, 1) # Using UTC for simplicity here
-    data = {
-        'timestamp': pd.to_datetime([base_date - pd.Timedelta(days=i) for i in range(30, 0, -1)]), # Last 30 days before current
-        'high': [100 + i + (i%5)*5 for i in range(30)], # Some varying highs
-        'low': [80 - i + (i%3)*3 for i in range(30)] # Some varying lows - though not used by current generator
-    }
-    historical_df = pd.DataFrame(data)
-
-    N = 20
-    # Example time window strings
-    buy_start_str = "15:55"
-    buy_end_str = "16:00"
+    N = 20 # N-day high period
+    buy_start_str = "15:55" # Example, not strictly enforced in this version of check_breakout_signal's day/time check
+    buy_end_str = "16:00"   # Example
 
     sg = SignalGenerator(n_day_high_period=N,
                          buy_window_start_time_str=buy_start_str,
                          buy_window_end_time_str=buy_end_str)
 
-    # --- Breakout Tests (similar to before) ---
-    print(f"\n--- Scenario 1: Breakout, Valid Day (Friday), Valid Time (15:58 UTC+8 within {buy_start_str}-{buy_end_str}) ---")
-    n_day_high_test_val = historical_df.tail(N)['high'].max()
-    current_high_price = n_day_high_test_val + 1
-    valid_buy_datetime = datetime(2023, 10, 27, 15, 58, 0) # Friday
-    signal_buy = sg.check_breakout_signal(historical_df, current_high_price, valid_buy_datetime)
-    logging.info(f"Signal for Scenario 1 (BUY): {signal_buy}")
-    assert signal_buy == "BUY"
-
-    # Scenario 2: No breakout
-    print(f"\n--- Scenario 2: No Breakout, Valid Day, Valid Time (within {buy_start_str}-{buy_end_str}) ---")
-    no_breakout_price = n_day_high_test_val -1
-    signal_no_breakout = sg.check_breakout_signal(historical_df, no_breakout_price, valid_buy_datetime)
-    logging.info(f"Signal for Scenario 2: {signal_no_breakout}")
-    assert signal_no_breakout is None
-
-    # Scenario 3: Breakout, Invalid Day (Wednesday)
-    print(f"\n--- Scenario 3: Breakout, Invalid Day (Wednesday), Valid Time (within {buy_start_str}-{buy_end_str}) ---")
+    # --- Setup Dummy Data ---
+    # current_datetime_utc8 for example tests
+    # Friday, October 27, 2023, 15:58:00 Beijing Time
+    valid_buy_datetime_fri = datetime(2023, 10, 27, 15, 58, 0)
     # Wednesday, October 25, 2023, 15:58:00 Beijing Time
-    invalid_day_datetime = datetime(2023, 10, 25, 15, 58, 0) # This is a Wednesday
-    signal_invalid_day = sg.check_breakout_signal(historical_df, current_high_price, invalid_day_datetime)
-    logging.info(f"Signal for Scenario 3: {signal_invalid_day}")
-    assert signal_invalid_day is None
+    invalid_day_datetime_wed = datetime(2023, 10, 25, 15, 58, 0)
 
-    # Scenario 4: Breakout, Valid Day (Monday), Invalid Time (10:00 AM)
-    print(f"\n--- Scenario 4: Breakout, Valid Day (Monday), Invalid Time (10:00 AM, outside {buy_start_str}-{buy_end_str}) ---")
-    # Monday, October 23, 2023, 10:00:00 Beijing Time
-    invalid_time_datetime = datetime(2023, 10, 23, 10, 0, 0) # This is a Monday
-    signal_invalid_time = sg.check_breakout_signal(historical_df, current_high_price, invalid_time_datetime)
-    logging.info(f"Signal for Scenario 4: {signal_invalid_time}")
-    assert signal_invalid_time == "BUY"
+    # Dummy daily_data_for_n_day_high (N days + buffer)
+    # Timestamps should be for previous days, e.g., midnight UTC
+    daily_timestamps = pd.to_datetime([valid_buy_datetime_fri - pd.Timedelta(days=i) for i in range(N + 10, 0, -1)]).normalize()
+    daily_highs = [100 + i for i in range(N + 10)] # Increasing highs for predictability
+    dummy_daily_data = pd.DataFrame({'timestamp': daily_timestamps, 'high': daily_highs})
+    # N-day high will be the max of the last N days from this set
+    expected_n_day_high = dummy_daily_data.tail(N)['high'].max() # Max of [100+10, ..., 100+10+N-1] = 100+10+N-1
 
-    # Scenario 5: Not enough data
-    print("\n--- Scenario 5: Not enough historical data ---")
-    short_historical_df = historical_df.tail(N-1) # N-1 days of data
-    signal_not_enough_data = sg.check_breakout_signal(short_historical_df, current_high_price, valid_buy_datetime)
-    logging.info(f"Signal for Scenario 5: {signal_not_enough_data}")
-    assert signal_not_enough_data is None
-
-    # Scenario 6: Breakout, Valid Day (Tuesday), Valid Time (16:00 UTC+8 at edge of window)
-    print(f"\n--- Scenario 6: Breakout, Valid Day (Tuesday), Valid Time (16:00 UTC+8, edge of {buy_start_str}-{buy_end_str}) ---")
-    # Tuesday, October 24, 2023, 16:00:00 Beijing Time
-    tuesday_buy_datetime = datetime(2023, 10, 24, 16, 0, 0) # This is a Tuesday
-    signal_tuesday = sg.check_breakout_signal(historical_df, current_high_price, tuesday_buy_datetime)
-    logging.info(f"Signal for Scenario 6: {signal_tuesday}")
-    assert signal_tuesday == "BUY"
-
-    # --- Resampling Tests ---
-    print("\n--- Scenario 7: Hourly data needing resampling ---")
-    # Create hourly historical data for a few days
-    hourly_data_list = []
-    # Simulate 3 days of hourly data, 24 hours each. N=20, so need more than 20 distinct days after resampling.
-    # Let's make sure we have enough days for an N=5 test after resampling.
-    # 5 days of hourly data
-    for day_offset in range(25, 20, -1): # 5 days: 25, 24, 23, 22, 21 days ago
-        for hour_offset in range(23, -1, -1): # 00:00 to 23:00 for each day
-            ts = base_date - pd.Timedelta(days=day_offset, hours=hour_offset)
-            # Make highs such that the daily max is easily predictable
-            # e.g., day X has max high of 100+X
-            hourly_data_list.append({'timestamp': ts, 'high': 100 + day_offset - (hour_offset/24.0)}) # decreasing high within the day
-
-    hourly_historical_df = pd.DataFrame(hourly_data_list)
-    # Make N smaller for this specific test to simplify data creation, e.g., N=3 (needs 3 daily records)
-    sg_resample_test = SignalGenerator(n_day_high_period=3,
-                                       buy_window_start_time_str=buy_start_str,
-                                       buy_window_end_time_str=buy_end_str)
-
-    # Expected daily highs:
-    # Day 23 ago: max high around 100+23
-    # Day 22 ago: max high around 100+22
-    # Day 21 ago: max high around 100+21
-    # N=3 high should be max(100+23, 100+22, 100+21) = 123 (approximately, due to hour_offset/24.0 part)
-    # Let's check exact values:
-    # For day_offset=23, max high is 100+23 = 123 (when hour_offset = 0)
-    # For day_offset=22, max high is 100+22 = 122
-    # For day_offset=21, max high is 100+21 = 121
-    # So, 3-day high from these should be 123.
-
-    current_high_resample = 124 # Breakout
-    # Use a valid buy datetime for this test
-    signal_resample = sg_resample_test.check_breakout_signal(hourly_historical_df, current_high_resample, valid_buy_datetime)
-    logging.info(f"Signal for Scenario 7 (Resampling): {signal_resample}")
-    assert signal_resample == "BUY" # Expecting a BUY signal after resampling
-
-    # Check if the number of rows in data_for_processing inside the call was indeed reduced to daily
-    # This requires either inspecting logs or modifying the function to return more info (not ideal for now)
-    # For now, we rely on the logging and the fact that the N-day high calculation would be different.
-
-    print("\n--- Scenario 8: Daily data, no resampling needed (using original sg with N=20) ---")
-    # Re-use historical_df which is already daily
-    # N_day_high for original daily data (N=20)
-    n_day_high_daily_orig = historical_df.tail(N)['high'].max()
-    current_high_daily_no_resample = n_day_high_daily_orig + 1 # Breakout
-    signal_daily_no_resample = sg.check_breakout_signal(historical_df, current_high_daily_no_resample, valid_buy_datetime)
-    logging.info(f"Signal for Scenario 8 (Daily, no resampling): {signal_daily_no_resample}")
-    assert signal_daily_no_resample == "BUY"
+    # Dummy hourly_data_for_24h_lookback
+    # Should lead up to the `current_datetime_utc8`
+    hourly_timestamps = pd.to_datetime([valid_buy_datetime_fri - pd.Timedelta(hours=i) for i in range(23, -1, -1)]) # Last 24 hours
 
 
-    print("\n--- SignalGenerator (Buy Only) Test Complete ---")
+    print(f"\n--- Test Setup ---")
+    logging.info(f"N = {N}")
+    logging.info(f"Expected N-day high based on dummy daily data: {expected_n_day_high}")
+    logging.info(f"Dummy daily data shape: {dummy_daily_data.shape}")
+    logging.info(f"Dummy daily data tail(3):\n{dummy_daily_data.tail(3)}")
+
+
+    # --- Scenario 1: Breakout, Valid Day ---
+    print(f"\n--- Scenario 1: Breakout, Valid Day (Friday) ---")
+    hourly_highs_breakout = [expected_n_day_high - 5 + i for i in range(24)] # Some variation
+    hourly_highs_breakout[-1] = expected_n_day_high + 1 # Ensure last hour's high causes breakout
+    dummy_hourly_data_breakout = pd.DataFrame({'timestamp': hourly_timestamps, 'high': hourly_highs_breakout})
+
+    signal_s1 = sg.check_breakout_signal(dummy_hourly_data_breakout, dummy_daily_data, valid_buy_datetime_fri)
+    logging.info(f"Signal for Scenario 1 (Breakout, Valid Day): {signal_s1}")
+    assert signal_s1 == "BUY"
+
+    # --- Scenario 2: No Breakout, Valid Day ---
+    print(f"\n--- Scenario 2: No Breakout, Valid Day (Friday) ---")
+    hourly_highs_no_breakout = [expected_n_day_high - 10 + i for i in range(24)]
+    hourly_highs_no_breakout[-1] = expected_n_day_high -1 # Max hourly high is below N-day high
+    dummy_hourly_data_no_breakout = pd.DataFrame({'timestamp': hourly_timestamps, 'high': hourly_highs_no_breakout})
+
+    signal_s2 = sg.check_breakout_signal(dummy_hourly_data_no_breakout, dummy_daily_data, valid_buy_datetime_fri)
+    logging.info(f"Signal for Scenario 2 (No Breakout, Valid Day): {signal_s2}")
+    assert signal_s2 is None
+
+    # --- Scenario 3: Breakout, Invalid Day ---
+    print(f"\n--- Scenario 3: Breakout, Invalid Day (Wednesday) ---")
+    # Using dummy_hourly_data_breakout which causes a breakout
+    signal_s3 = sg.check_breakout_signal(dummy_hourly_data_breakout, dummy_daily_data, invalid_day_datetime_wed)
+    logging.info(f"Signal for Scenario 3 (Breakout, Invalid Day): {signal_s3}")
+    assert signal_s3 is None
+
+    # --- Scenario 4: Not enough daily data ---
+    print(f"\n--- Scenario 4: Not enough daily data ---")
+    short_daily_data = dummy_daily_data.tail(N - 1)
+    signal_s4 = sg.check_breakout_signal(dummy_hourly_data_breakout, short_daily_data, valid_buy_datetime_fri)
+    logging.info(f"Signal for Scenario 4 (Not enough daily data): {signal_s4}")
+    assert signal_s4 is None
+
+    # --- Scenario 5: Empty hourly data ---
+    print(f"\n--- Scenario 5: Empty hourly data ---")
+    empty_hourly_df = pd.DataFrame({'high': []}) # Or some other way to make it empty / invalid
+    signal_s5 = sg.check_breakout_signal(empty_hourly_df, dummy_daily_data, valid_buy_datetime_fri)
+    logging.info(f"Signal for Scenario 5 (Empty hourly data): {signal_s5}")
+    assert signal_s5 is None
+
+    # --- Scenario 6: Hourly data missing 'high' column ---
+    print(f"\n--- Scenario 6: Hourly data missing 'high' column ---")
+    hourly_missing_high_col = pd.DataFrame({'timestamp': hourly_timestamps, 'value': hourly_highs_breakout})
+    signal_s6 = sg.check_breakout_signal(hourly_missing_high_col, dummy_daily_data, valid_buy_datetime_fri)
+    logging.info(f"Signal for Scenario 6 (Hourly missing 'high'): {signal_s6}")
+    assert signal_s6 is None
+
+    # --- Scenario 7: Daily data missing 'high' column ---
+    print(f"\n--- Scenario 7: Daily data missing 'high' column ---")
+    daily_missing_high_col = pd.DataFrame({'timestamp': daily_timestamps, 'value': daily_highs})
+    signal_s7 = sg.check_breakout_signal(dummy_hourly_data_breakout, daily_missing_high_col, valid_buy_datetime_fri)
+    logging.info(f"Signal for Scenario 7 (Daily missing 'high'): {signal_s7}")
+    assert signal_s7 is None
+
+    # --- Scenario 8: Daily data missing 'timestamp' column ---
+    print(f"\n--- Scenario 8: Daily data missing 'timestamp' column ---")
+    daily_missing_ts_col = pd.DataFrame({'high': daily_highs, 'value': daily_highs})
+    signal_s8 = sg.check_breakout_signal(dummy_hourly_data_breakout, daily_missing_ts_col, valid_buy_datetime_fri)
+    logging.info(f"Signal for Scenario 8 (Daily missing 'timestamp'): {signal_s8}")
+    assert signal_s8 is None
+
+    print("\n--- SignalGenerator (New Method) Test Complete ---")
