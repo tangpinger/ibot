@@ -162,7 +162,7 @@ class BacktestingEngine:
                 # Reset entry timestamp and price
                 self.portfolio['asset_entry_timestamp_utc'] = None
                 self.portfolio['asset_entry_price'] = 0.0
-                print(f"Simulated SELL: {quantity} {symbol} at {price:.2f}. Proceeds: {proceeds:.2f}, Comm: {commission:.2f}")
+                print(f"Simulated SELL: {quantity} {symbol} at {price:.2f}. Proceeds: {proceeds:.2f}, Comm: {commission:.2f}, Balance: {self.portfolio['cash']:.2f}")
                 return True
             else:
                 print(f"Warning: Not enough assets to execute SELL order for {quantity} {symbol}. Required: {quantity}, Available: {self.portfolio['asset_qty']:.2f}")
