@@ -382,87 +382,92 @@ class BacktestingEngine:
                 else:
                     buy_signal = None # Ensure buy_signal is None if checks fail
 
-            # Process BUY Signal
-            if buy_signal == "BUY":
-                # timestamp_for_buy_order will be the timestamp of the hourly candle at buy_window_end_dt_utc
-                # Default to daily close price for fallback
-                price_for_buy_order = current_close_price
-                buy_executed_at_specific_time = False
+                # Process BUY Signal
+                if buy_signal == "BUY":
+                    # timestamp_for_buy_order will be the timestamp of the hourly candle at buy_window_end_dt_utc
+                    # Default to daily close price for fallback
+                    price_for_buy_order = current_close_price
+                    buy_executed_at_specific_time = False
 
-                # The target_buy_datetime_utc is buy_window_end_dt_utc, this is the candle we try to buy on its open.
-                target_buy_datetime_utc = buy_window_end_dt_utc
-                timestamp_for_buy_order = target_buy_datetime_utc # Initialize with this target
+                    # The target_buy_datetime_utc is buy_window_end_dt_utc, this is the candle we try to buy on its open.
+                    target_buy_datetime_utc = buy_window_end_dt_utc
+                    timestamp_for_buy_order = target_buy_datetime_utc # Initialize with this target
 
-                logging.info(f"BUY signal: Attempting to find hourly candle for buy time {self.signal_generator.buy_window_end_str} UTC+8 (which is {target_buy_datetime_utc} UTC).")
+                    logging.info(f"BUY signal: Attempting to find hourly candle for buy time {self.signal_generator.buy_window_end_str} UTC+8 (which is {target_buy_datetime_utc} UTC).")
 
-                exact_hourly_candle = self.hourly_historical_data[
-                    self.hourly_historical_data['timestamp'] == target_buy_datetime_utc # This is buy_window_end_dt_utc
-                ]
-
-                if not exact_hourly_candle.empty:
-                    selected_hourly_candle = exact_hourly_candle.iloc[0]
-                    price_for_buy_order = selected_hourly_candle['open'] # Buy at the open of this candle
-                    # timestamp_for_buy_order is already target_buy_datetime_utc
-                    buy_executed_at_specific_time = True
-                    logging.info(
-                        f"BUY signal: Using HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
-                        f"{timestamp_for_buy_order} (UTC) for order."
-                    )
-                else:
-                    # Fallback: try to find the *first available* hourly candle on or after the target buy time,
-                    # but still within the same logical "processing day" (e.g., before the next day's 00:00 UTC+8)
-                    logging.warning(
-                        f"BUY signal: Exact hourly candle for {target_buy_datetime_utc} (UTC) NOT found. "
-                        f"Attempting to find first candle AT or AFTER target time on the same logical day."
-                    )
-                    # Define search window: from target_buy_datetime_utc up to the end of the UTC+8 day
-                    # current_processing_day_dt_utc8 is the day being processed (UTC+8)
-                    # end_of_processing_day_utc8 = current_processing_day_dt_utc8.replace(hour=23, minute=59, second=59, microsecond=999999)
-                    # end_of_processing_day_utc = end_of_processing_day_utc8.tz_convert('UTC')
-
-                    # Simpler: search up to next daily candle start (current_daily_candle_timestamp_utc + 1 day)
-                    # This means we look for an execution within the 24h period of the current daily candle we are processing
-                    search_limit_utc = current_daily_candle_timestamp_utc + pd.Timedelta(days=1)
-
-                    alternative_hourly_candles = self.hourly_historical_data[
-                        (self.hourly_historical_data['timestamp'] >= target_buy_datetime_utc) &
-                        (self.hourly_historical_data['timestamp'] < search_limit_utc) # Strictly before next daily candle
+                    exact_hourly_candle = self.hourly_historical_data[
+                        self.hourly_historical_data['timestamp'] == target_buy_datetime_utc # This is buy_window_end_dt_utc
                     ]
 
-                    if not alternative_hourly_candles.empty:
-                        selected_hourly_candle = alternative_hourly_candles.iloc[0] # Take the first one
-                        price_for_buy_order = selected_hourly_candle['open']
-                        timestamp_for_buy_order = selected_hourly_candle['timestamp'] # Update to actual execution time
-                        buy_executed_at_specific_time = True # Still considered specific as it's hourly based
+                    if not exact_hourly_candle.empty:
+                        selected_hourly_candle = exact_hourly_candle.iloc[0]
+                        price_for_buy_order = selected_hourly_candle['open'] # Buy at the open of this candle
+                        # timestamp_for_buy_order is already target_buy_datetime_utc
+                        buy_executed_at_specific_time = True
                         logging.info(
-                            f"BUY signal: Using alternative HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
-                            f"{timestamp_for_buy_order} (UTC) as primary target was missed."
+                            f"BUY signal: Using HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
+                            f"{timestamp_for_buy_order} (UTC) for order."
                         )
                     else:
-                        # If no hourly candle found, fallback to current daily candle's close
-                        price_for_buy_order = current_close_price # current_close_price from daily iteration
-                        timestamp_for_buy_order = current_daily_candle_timestamp_utc # Fallback to daily candle timestamp
-                        buy_executed_at_specific_time = False
+                        # Fallback: try to find the *first available* hourly candle on or after the target buy time,
+                        # but still within the same logical "processing day" (e.g., before the next day's 00:00 UTC+8)
                         logging.warning(
-                            f"BUY signal: No suitable alternative hourly candle found after {target_buy_datetime_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC "
-                            f"and before {search_limit_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC. "
-                            f"Falling back to DAILY CLOSE price {price_for_buy_order:.2f} from daily candle at {timestamp_for_buy_order}."
+                            f"BUY signal: Exact hourly candle for {target_buy_datetime_utc} (UTC) NOT found. "
+                            f"Attempting to find first candle AT or AFTER target time on the same logical day."
                         )
+                        # Define search window: from target_buy_datetime_utc up to the end of the UTC+8 day
+                        # current_processing_day_dt_utc8 is the day being processed (UTC+8)
+                        # end_of_processing_day_utc8 = current_processing_day_dt_utc8.replace(hour=23, minute=59, second=59, microsecond=999999)
+                        # end_of_processing_day_utc = end_of_processing_day_utc8.tz_convert('UTC')
 
-                cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
-                if price_for_buy_order > 0:
-                    quantity_to_buy = cash_to_spend_on_buy / price_for_buy_order
-                    if quantity_to_buy > 0:
-                        logging.info(f"Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f} at {timestamp_for_buy_order} (Specific time target: {'Yes' if buy_executed_at_specific_time else 'No - Daily Fallback'}).")
-                        self._simulate_order(
-                            timestamp=timestamp_for_buy_order,
-                            order_type='BUY',
-                                symbol=symbol,
-                                price=price_for_buy_order,
-                                quantity=quantity_to_buy
+                        # Simpler: search up to next daily candle start (current_daily_candle_timestamp_utc + 1 day)
+                        # This means we look for an execution within the 24h period of the current daily candle we are processing
+                        search_limit_utc = current_daily_candle_timestamp_utc + pd.Timedelta(days=1)
+
+                        alternative_hourly_candles = self.hourly_historical_data[
+                            (self.hourly_historical_data['timestamp'] >= target_buy_datetime_utc) &
+                            (self.hourly_historical_data['timestamp'] < search_limit_utc) # Strictly before next daily candle
+                        ]
+
+                        if not alternative_hourly_candles.empty:
+                            selected_hourly_candle = alternative_hourly_candles.iloc[0] # Take the first one
+                            price_for_buy_order = selected_hourly_candle['open']
+                            timestamp_for_buy_order = selected_hourly_candle['timestamp'] # Update to actual execution time
+                            buy_executed_at_specific_time = True # Still considered specific as it's hourly based
+                            logging.info(
+                                f"BUY signal: Using alternative HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
+                                f"{timestamp_for_buy_order} (UTC) as primary target was missed."
                             )
-                else:
-                    logging.info(f"BUY signal received for {current_daily_candle_timestamp_utc}, but already holding assets. Skipping buy.")
+                        else:
+                            # If no hourly candle found, fallback to current daily candle's close
+                            price_for_buy_order = current_close_price # current_close_price from daily iteration
+                            timestamp_for_buy_order = current_daily_candle_timestamp_utc # Fallback to daily candle timestamp
+                            buy_executed_at_specific_time = False
+                            logging.warning(
+                                f"BUY signal: No suitable alternative hourly candle found after {target_buy_datetime_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC "
+                                f"and before {search_limit_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC. "
+                                f"Falling back to DAILY CLOSE price {price_for_buy_order:.2f} from daily candle at {timestamp_for_buy_order}."
+                            )
+
+                    cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
+                    if price_for_buy_order > 0:
+                        quantity_to_buy = cash_to_spend_on_buy / price_for_buy_order
+                        if quantity_to_buy > 0:
+                            logging.info(f"Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f} at {timestamp_for_buy_order} (Specific time target: {'Yes' if buy_executed_at_specific_time else 'No - Daily Fallback'}).")
+                            self._simulate_order(
+                                timestamp=timestamp_for_buy_order,
+                                order_type='BUY',
+                                    symbol=symbol,
+                                    price=price_for_buy_order,
+                                    quantity=quantity_to_buy
+                                )
+                else: # This else corresponds to 'if buy_signal == "BUY":'
+                    # This log will now correctly reflect that no BUY signal was generated OR conditions for buying weren't met (e.g. already holding assets)
+                    # The specific reason (no signal vs. already holding) is implicitly handled by the flow.
+                    # If buy_signal was None, it means no signal. If buy_signal was "BUY" but this 'else' is hit, it's because asset_qty != 0.
+                    # However, the 'if self.portfolio['asset_qty'] == 0:' already gates this.
+                    # So this 'else' primarily means 'no buy signal was generated by the strategy for this period'.
+                    logging.info(f"No BUY signal generated or conditions not met on {current_daily_candle_timestamp_utc.strftime('%Y-%m-%d')}.")
 
 
             # SELL Logic (Holding Period Based)
