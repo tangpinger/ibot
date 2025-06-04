@@ -313,67 +313,54 @@ class BacktestingEngine:
                      self._update_portfolio_value(current_price=getattr(row, 'close'), timestamp=getattr(row, 'timestamp'))
                 continue
 
-            # BUY Signal Logic (remains largely the same)
+            # BUY Signal Logic
+            # The signal is checked based on Day D-1's breakout against N days prior to it.
+            # Order placement rules (valid day/time) are checked for Day D (current_timestamp_utc).
             buy_signal = None
             if self.portfolio['asset_qty'] == 0: # Only check for buy if we don't hold assets
-                if current_idx >= n_period:
-                    # Signal generation uses daily data up to the current day
-                    historical_data_for_signal = self.daily_historical_data.iloc[current_idx - n_period : current_idx]
+                # Need n_period days before Day D-1, plus Day D-1 itself.
+                # So, current_idx must be at least n_period + 1.
+                # Example: n_period=20.
+                # current_idx = 21 (Day D). Day D-1 is index 20. Hist data is index 0 to 19 (20 days).
+                if current_idx >= n_period + 1:
                     try:
+                        # Prepare data for check_breakout_signal
+                        # Day D-1 (N+1) data
+                        day_N_plus_1_data_row = self.daily_historical_data.iloc[current_idx - 1]
+                        day_N_plus_1_high = day_N_plus_1_data_row['high']
+                        day_N_plus_1_timestamp = day_N_plus_1_data_row['timestamp'] # For logging
+
+                        # Historical data for N days preceding Day D-1
+                        # Slice from (current_idx - 1 - n_period) up to (but not including) (current_idx - 1)
+                        historical_data_for_signal = self.daily_historical_data.iloc[current_idx - 1 - n_period : current_idx - 1]
+
+                        logging.info(f"Timestamp {current_timestamp_utc} (Day D): Preparing to check breakout for Day D-1 ({day_N_plus_1_timestamp}).")
+                        logging.info(f"Day D-1's High: {day_N_plus_1_high}. Historical data for signal: {len(historical_data_for_signal)} rows (from index {current_idx - 1 - n_period} to {current_idx - 2}).")
+
+                        # current_datetime_utc8 for order placement rules (Day D)
                         if current_timestamp_utc.tzinfo is None:
                             current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
                         else:
                             current_datetime_utc8 = current_timestamp_utc.tz_convert('Asia/Shanghai')
 
-                        # Default to daily high, will be updated if hourly calculation is successful
-                        effective_current_day_high = daily_high_for_signal_fallback
-
-                        try:
-                            current_day_start_utc = current_timestamp_utc.normalize()
-                            buy_window_end_hour, buy_window_end_minute = map(int, self.signal_generator.buy_window_end_str.split(':'))
-
-                            target_buy_limit_datetime_utc8 = current_datetime_utc8.replace(
-                                hour=buy_window_end_hour,
-                                minute=buy_window_end_minute,
-                                second=0,
-                                microsecond=0
-                            )
-                            target_buy_hourly_limit_utc = target_buy_limit_datetime_utc8.tz_convert('UTC')
-
-                            # Additional filter: ensure hourly data is within the current day being processed by the daily loop
-                            # This avoids looking at hourly data from previous days if target_buy_hourly_limit_utc is very early.
-                            # And also ensures we don't look into the next day's hourly data.
-                            current_day_end_utc = current_day_start_utc + pd.Timedelta(days=1)
-                            # print(f'Current day start UTC: {current_day_start_utc}, end UTC: {current_day_end_utc}, ')
-
-                            hourly_candles_before_buy_limit = self.hourly_historical_data[
-                                (self.hourly_historical_data['timestamp'] >= current_day_start_utc) &
-                                (self.hourly_historical_data['timestamp'] < target_buy_hourly_limit_utc) & # Strictly before the limit
-                                (self.hourly_historical_data['timestamp'] < current_day_end_utc) # And within the current day
-                            ]
-
-                            if not hourly_candles_before_buy_limit.empty:
-                                calculated_hourly_high = hourly_candles_before_buy_limit['high'].max()
-                                if pd.notna(calculated_hourly_high):
-                                    logging.info(f"Timestamp {current_timestamp_utc}: Calculated current_day_high for signal from hourly data: {calculated_hourly_high:.2f} (up to {target_buy_hourly_limit_utc} UTC)")
-                                    effective_current_day_high = calculated_hourly_high
-                                else:
-                                    logging.warning(f"Timestamp {current_timestamp_utc}: Max high from hourly data for signal is NaN. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
-                            else:
-                                logging.info(f"Timestamp {current_timestamp_utc}: No hourly candles found before {target_buy_hourly_limit_utc} UTC for signal's current_day_high. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
-
-                        except Exception as e_hourly_high_signal:
-                            logging.error(f"Timestamp {current_timestamp_utc}: Error calculating current_day_high for signal from hourly data: {e_hourly_high_signal}. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
+                        # The old logic for `effective_current_day_high` (calculating high of Day D using hourly data)
+                        # is removed here as it's not needed for the new signal generation logic.
+                        # The signal is now based on Day D-1's high.
 
                         buy_signal = self.signal_generator.check_breakout_signal(
-                            daily_ohlcv_data=historical_data_for_signal,
-                            current_day_high=effective_current_day_high,
-                            # current_day_high=daily_high_for_signal_fallback,
-                            current_datetime_utc8=current_datetime_utc8
+                            historical_data_for_n_period=historical_data_for_signal,
+                            breakout_test_day_high=day_N_plus_1_high,
+                            current_datetime_utc8=current_datetime_utc8 # This is for Day D's order placement rules
                         )
+                    except IndexError as e_idx:
+                        logging.error(f"Error during BUY signal data preparation at {current_timestamp_utc} (current_idx {current_idx}): {e_idx}. This might be due to insufficient historical data for the lookback period.")
+                        buy_signal = None
                     except Exception as e:
                         logging.error(f"Error during BUY signal generation prep at {current_timestamp_utc}: {e}")
                         buy_signal = None
+                else:
+                    logging.info(f"Timestamp {current_timestamp_utc}: Not enough data yet to check for buy signal (current_idx {current_idx}, n_period {n_period}). Need at least {n_period+1} days of data.")
+
 
             # Process BUY Signal
             if buy_signal == "BUY":
@@ -394,28 +381,54 @@ class BacktestingEngine:
                         target_buy_datetime_utc8 = current_datetime_utc8.replace(hour=buy_hour, minute=buy_minute, second=0, microsecond=0)
                         target_buy_datetime_utc = target_buy_datetime_utc8.tz_convert('UTC')
 
-                        logging.info(f"BUY signal: Attempting to find hourly candle for buy time {buy_window_end_str} UTC+8 (which is {target_buy_datetime_utc} UTC).")
+                        target_buy_datetime_utc8 = current_datetime_utc8.replace(hour=buy_hour, minute=buy_minute, second=0, microsecond=0)
+                        target_buy_datetime_utc = target_buy_datetime_utc8.tz_convert('UTC')
 
-                        exact_hourly_candle = self.hourly_historical_data[
-                            self.hourly_historical_data['timestamp'] == target_buy_datetime_utc
-                        ]
+                        logging.info(f"BUY signal: Attempting to find hourly candle for buy time {buy_window_end_str} UTC+8 (target UTC: {target_buy_datetime_utc}).")
 
-                        if not exact_hourly_candle.empty:
-                            selected_hourly_candle = exact_hourly_candle.iloc[0]
-                            price_for_buy_order = selected_hourly_candle['open']
-                            buy_executed_at_specific_time = True
-                            # Update timestamp for buy order and log
-                            timestamp_for_buy_order = selected_hourly_candle['timestamp']
-                            logging.info(f"BUY order will use timestamp from hourly candle: {timestamp_for_buy_order}")
-                            logging.info(
-                                f"BUY signal: Using HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
-                                f"{selected_hourly_candle['timestamp']} (UTC) for order (target: {buy_window_end_str} UTC+8)."
-                            )
-                        else:
+                        # TODO: Resolve issue with hourly candle lookup for buy orders.
+                        # The following logic attempts to find an exact hourly candle for the buy order price
+                        # using target_buy_datetime_utc. However, unit tests (e.g.,
+                        # test_buy_signal_on_N_plus_2_day_for_N_plus_1_breakout) have shown that this
+                        # lookup can fail even when test data seems to provide a matching candle.
+                        # The engine then falls back to the next available hourly candle or, more often,
+                        # to the daily close price. This might be due to subtle pandas Timestamp comparison
+                        # issues (e.g., nanosecond precision, freq attribute, or other metadata) that
+                        # are not fully resolved by simple equality, minute-flooring, or .loc lookups.
+                        # This requires further investigation, potentially with interactive debugging,
+                        # to ensure the intended hourly price is consistently used when available.
+                        # For now, the system relies on the fallback mechanisms.
+                        try:
+                            # Use .loc for robust timestamp lookup after setting timestamp as index
+                            hourly_data_indexed = self.hourly_historical_data.set_index('timestamp')
+                            selected_hourly_candle_series = hourly_data_indexed.loc[target_buy_datetime_utc]
+
+                            if isinstance(selected_hourly_candle_series, pd.Series): # Single match
+                                price_for_buy_order = selected_hourly_candle_series['open']
+                                buy_executed_at_specific_time = True
+                                timestamp_for_buy_order = selected_hourly_candle_series.name # Timestamp from index
+                                logging.info(f"BUY order will use timestamp from hourly candle: {timestamp_for_buy_order}")
+                                logging.info(
+                                    f"BUY signal: Found exact hourly candle using .loc[] at {timestamp_for_buy_order} (UTC). Using HOURLY OPEN price {price_for_buy_order:.2f}."
+                                )
+                            elif isinstance(selected_hourly_candle_series, pd.DataFrame) and not selected_hourly_candle_series.empty: # Multiple matches (should be rare for unique hourly data)
+                                selected_hourly_candle_first_match = selected_hourly_candle_series.iloc[0]
+                                price_for_buy_order = selected_hourly_candle_first_match['open']
+                                buy_executed_at_specific_time = True
+                                timestamp_for_buy_order = selected_hourly_candle_first_match.name
+                                logging.info(f"BUY order will use timestamp from (first) hourly candle: {timestamp_for_buy_order}")
+                                logging.info(
+                                    f"BUY signal: Found multiple hourly candles using .loc[] for {target_buy_datetime_utc} (UTC). Using first match at {timestamp_for_buy_order} with HOURLY OPEN price {price_for_buy_order:.2f}."
+                                )
+                            else: # Should not be reached if KeyError is caught or data types are as expected
+                                raise KeyError(f"Unexpected data type returned from .loc[] lookup for {target_buy_datetime_utc}: {type(selected_hourly_candle_series)}")
+
+                        except KeyError: # .loc[target_time] raises KeyError if exact timestamp not found
                             logging.warning(
-                                f"BUY signal: Exact hourly candle for {target_buy_datetime_utc} (UTC) NOT found. "
+                                f"BUY signal: Exact hourly candle for {target_buy_datetime_utc} (UTC) NOT found using .loc[]. "
                                 f"Attempting to find first candle AT or AFTER target time on the same day."
                             )
+                            # Fallback logic: find first candle at or after the target time on the same day
                             current_processing_day_utc_normalized = target_buy_datetime_utc.normalize()
                             next_day_utc_normalized = current_processing_day_utc_normalized + pd.Timedelta(days=1)
 
