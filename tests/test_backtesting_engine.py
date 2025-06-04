@@ -210,7 +210,8 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         self.assertIsNotNone(buy_order_call, "BUY order was not simulated")
 
         buy_kwargs = buy_order_call.kwargs
-        self.assertEqual(buy_kwargs['timestamp'], buy_trigger_daily_ts_utc, "BUY order timestamp should be the daily candle's timestamp")
+        expected_buy_order_hourly_ts = pd.Timestamp('2023-01-02 08:00:00', tz='UTC') # Corresponds to target_buy_price_pickup_utc
+        self.assertEqual(buy_kwargs['timestamp'], expected_buy_order_hourly_ts, "BUY order timestamp should be the hourly candle's timestamp")
         self.assertEqual(buy_kwargs['price'], self.hourly_open_price_for_buy_at_1600, "BUY order price should be the hourly OPEN price at 16:00 UTC+8 target")
 
         qty_bought = buy_kwargs['quantity']
@@ -226,10 +227,10 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         sell_kwargs = sell_order_call.kwargs
 
         # sell_trigger_utc_timestamp was defined as Jan 3, 02:00 UTC (for the 10:00 UTC+8 check)
-        # The actual order timestamp in _simulate_order should be the beginning of that daily candle
-        expected_sell_order_daily_ts = pd.Timestamp('2023-01-03 00:00:00', tz='UTC') # This is self.sample_daily_ohlcv_data.iloc[2]['timestamp']
+        # The actual order timestamp in _simulate_order should be the hourly candle's timestamp used for price
+        expected_sell_order_hourly_ts = pd.Timestamp('2023-01-03 02:00:00', tz='UTC') # Corresponds to target_hourly_sell_candle_time
 
-        self.assertEqual(sell_kwargs['timestamp'], expected_sell_order_daily_ts, "SELL order timestamp should be the daily candle's timestamp for the sell day")
+        self.assertEqual(sell_kwargs['timestamp'], expected_sell_order_hourly_ts, "SELL order timestamp should be the hourly candle's timestamp")
         self.assertEqual(sell_kwargs['price'], self.hourly_open_price_for_sell, "SELL order price should be the specific hourly open price")
         self.assertAlmostEqual(sell_kwargs['quantity'], qty_bought * self.sample_config['strategy']['sell_asset_percentage'], places=4)
 
@@ -415,9 +416,10 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         self.assertIsNotNone(sell_order_call, "SELL order was not simulated within the window")
 
         sell_kwargs = sell_order_call.kwargs
-        # Sell order recorded against the daily candle timestamp that triggered the check
-        self.assertEqual(sell_kwargs['timestamp'], sell_trigger_daily_ts_utc,
-                         "SELL order timestamp should be the (modified) daily candle's timestamp for the sell day")
+        # Sell order recorded against the hourly candle's timestamp used for price
+        expected_sell_hourly_ts = pd.Timestamp('2023-01-03 02:00:00', tz='UTC') # This is target_hourly_sell_candle_time in setUp
+        self.assertEqual(sell_kwargs['timestamp'], expected_sell_hourly_ts,
+                         "SELL order timestamp should be the hourly candle's timestamp")
         self.assertEqual(sell_kwargs['price'], expected_sell_price,
                          "SELL order price should be the hourly open price at sell_window_end_time")
         self.assertAlmostEqual(sell_kwargs['quantity'], qty_bought * current_config['strategy']['sell_asset_percentage'])
@@ -681,7 +683,8 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         self.assertIsNotNone(sell_order_call, "SELL order should have been simulated with custom window times")
 
         sell_kwargs = sell_order_call.kwargs
-        self.assertEqual(sell_kwargs['timestamp'], sell_trigger_daily_ts_utc, "SELL order timestamp mismatch")
+        expected_custom_sell_hourly_ts = pd.Timestamp('2023-01-03 03:00:00', tz='UTC') # Corresponds to target_hourly_sell_utc_custom
+        self.assertEqual(sell_kwargs['timestamp'], expected_custom_sell_hourly_ts, "SELL order timestamp should be the custom hourly candle's timestamp")
         self.assertEqual(sell_kwargs['price'], expected_hourly_sell_price_custom,
                          "SELL order price should be the hourly open price at the custom sell_window_end_time")
 
@@ -766,8 +769,9 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         buy_kwargs = buy_order_call.kwargs
         self.assertEqual(buy_kwargs['price'], expected_fallback_hourly_open_price,
                          "BUY order price should be the open of the next available hourly candle")
-        self.assertEqual(buy_kwargs['timestamp'], buy_trigger_daily_ts_utc,
-                         "BUY order timestamp should be the daily candle's timestamp")
+        expected_fallback_hourly_ts = pd.Timestamp('2023-01-02 09:00:00', tz='UTC') # Corresponds to fallback_hourly_candle_utc
+        self.assertEqual(buy_kwargs['timestamp'], expected_fallback_hourly_ts,
+                         "BUY order timestamp should be the fallback hourly candle's timestamp")
 
         # Check for logging
         log_found = any(
