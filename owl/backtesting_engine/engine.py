@@ -141,7 +141,7 @@ class BacktestingEngine:
                 # Record entry timestamp and price
                 self.portfolio['asset_entry_timestamp_utc'] = timestamp
                 self.portfolio['asset_entry_price'] = price
-                print(f"Simulated BUY: {quantity} {symbol} at {price:.2f}. Cost: {cost:.2f}, Comm: {commission:.2f}")
+                print(f"Simulated BUY: {quantity} {symbol} at {price:.2f}. Cost: {cost:.2f}, Comm: {commission:.2f}, Timestamp: {timestamp.tz_convert('Asia/Shanghai')}")
                 return True
             else:
                 print(f"Warning: Not enough cash to execute BUY order for {quantity} {symbol} at {price:.2f}. Required: {total_cost:.2f}, Available: {self.portfolio['cash']:.2f}")
@@ -162,7 +162,7 @@ class BacktestingEngine:
                 # Reset entry timestamp and price
                 self.portfolio['asset_entry_timestamp_utc'] = None
                 self.portfolio['asset_entry_price'] = 0.0
-                print(f"Simulated SELL: {quantity} {symbol} at {price:.2f}. Proceeds: {proceeds:.2f}, Comm: {commission:.2f}, Balance: {self.portfolio['cash']:.2f}")
+                print(f"Simulated SELL: {quantity} {symbol} at {price:.2f}. Proceeds: {proceeds:.2f}, Comm: {commission:.2f}, Balance: {self.portfolio['cash']:.2f}, Timestamp: {timestamp.tz_convert('Asia/Shanghai')}")
                 return True
             else:
                 print(f"Warning: Not enough assets to execute SELL order for {quantity} {symbol}. Required: {quantity}, Available: {self.portfolio['asset_qty']:.2f}")
@@ -305,19 +305,12 @@ class BacktestingEngine:
                 # Ensure 'timestamp', 'high', 'low', 'close' are actual column names in your DataFrame
                 current_timestamp_utc = getattr(row, 'timestamp')
                 current_day_high = getattr(row, 'high') # From daily data
-                current_day_low = getattr(row, 'low', None) # From daily data
                 current_close_price = getattr(row, 'close') # From daily data
             except AttributeError as e:
                 print(f"Error accessing data in row (index {getattr(row, 'Index', 'N/A')}): {row}. Missing required OHLCV attribute. Details: {e}")
                 print("Make sure DAILY historical_data DataFrame has 'timestamp', 'high', 'low', and 'close' columns.")
                 if hasattr(row, 'close') and hasattr(row, 'timestamp'):
                      self._update_portfolio_value(current_price=getattr(row, 'close'), timestamp=getattr(row, 'timestamp'))
-                continue
-
-            if current_day_low is None:
-                logging.warning(f"Timestamp {current_timestamp_utc}: 'low' price data is missing. Skipping sell signal check for this period.")
-                # Update portfolio and continue, as sell signal cannot be evaluated
-                self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc)
                 continue
 
             # BUY Signal Logic (remains largely the same)
