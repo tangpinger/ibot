@@ -254,13 +254,13 @@ tzdata = ["tzdata"]
 
 [[package]]
 name = "ccxt"
-version = "4.4.86"
+version = "4.4.87"
 description = "A JavaScript / TypeScript / Python / C# / PHP cryptocurrency trading library with support for 100+ exchanges"
 optional = false
 python-versions = "*"
 files = [
-    {file = "ccxt-4.4.86-py2.py3-none-any.whl", hash = "sha256:81fca9b6e13c514a888ba3ba9a9f727cb96b3556b3a664e1ba29b0f149803b5f"},
-    {file = "ccxt-4.4.86.tar.gz", hash = "sha256:8565aabc1044429661749a906929c935484e9c2407d2c7506b8e195b13b8fff5"},
+    {file = "ccxt-4.4.87-py2.py3-none-any.whl", hash = "sha256:709e950078bb83f7ad02d5ddf898b00693ad8a39b4e0f06b1c4e3b886934871e"},
+    {file = "ccxt-4.4.87.tar.gz", hash = "sha256:1b511ccdc55a1096f4550712883f46ca6e022caf9e78758f36ad81a43f1cfbf2"},
 ]
 
 [package.dependencies]

@@ -318,7 +318,7 @@ class BacktestingEngine:
             if self.portfolio['asset_qty'] == 0: # Only check for buy if we don't hold assets
                 if current_idx >= n_period:
                     # Signal generation uses daily data up to the current day
-                    historical_data_for_signal = self.daily_historical_data.iloc[max(0, current_idx - n_period) : current_idx - 1]
+                    historical_data_for_signal = self.daily_historical_data.iloc[current_idx - n_period : current_idx]
                     try:
                         if current_timestamp_utc.tzinfo is None:
                             current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
@@ -344,6 +344,7 @@ class BacktestingEngine:
                             # This avoids looking at hourly data from previous days if target_buy_hourly_limit_utc is very early.
                             # And also ensures we don't look into the next day's hourly data.
                             current_day_end_utc = current_day_start_utc + pd.Timedelta(days=1)
+                            # print(f'Current day start UTC: {current_day_start_utc}, end UTC: {current_day_end_utc}, ')
 
                             hourly_candles_before_buy_limit = self.hourly_historical_data[
                                 (self.hourly_historical_data['timestamp'] >= current_day_start_utc) &
@@ -367,6 +368,7 @@ class BacktestingEngine:
                         buy_signal = self.signal_generator.check_breakout_signal(
                             daily_ohlcv_data=historical_data_for_signal,
                             current_day_high=effective_current_day_high,
+                            # current_day_high=daily_high_for_signal_fallback,
                             current_datetime_utc8=current_datetime_utc8
                         )
                     except Exception as e:
