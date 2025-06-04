@@ -318,7 +318,7 @@ class BacktestingEngine:
             if self.portfolio['asset_qty'] == 0: # Only check for buy if we don't hold assets
                 if current_idx >= n_period:
                     # Signal generation uses daily data up to the current day
-                    historical_data_for_signal = self.daily_historical_data.iloc[max(0, current_idx - n_period) : current_idx]
+                    historical_data_for_signal = self.daily_historical_data.iloc[max(0, current_idx - n_period) : current_idx - 1]
                     try:
                         if current_timestamp_utc.tzinfo is None:
                             current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
