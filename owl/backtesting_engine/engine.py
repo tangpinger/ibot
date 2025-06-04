@@ -304,7 +304,7 @@ class BacktestingEngine:
             try:
                 # Ensure 'timestamp', 'high', 'low', 'close' are actual column names in your DataFrame
                 current_timestamp_utc = getattr(row, 'timestamp')
-                current_day_high = getattr(row, 'high') # From daily data
+                daily_high_for_signal_fallback = getattr(row, 'high') # From daily data
                 current_close_price = getattr(row, 'close') # From daily data
             except AttributeError as e:
                 print(f"Error accessing data in row (index {getattr(row, 'Index', 'N/A')}): {row}. Missing required OHLCV attribute. Details: {e}")
@@ -318,16 +318,55 @@ class BacktestingEngine:
             if self.portfolio['asset_qty'] == 0: # Only check for buy if we don't hold assets
                 if current_idx >= n_period:
                     # Signal generation uses daily data up to the current day
-                    historical_data_for_signal = self.daily_historical_data.iloc[:current_idx]
+                    historical_data_for_signal = self.daily_historical_data.iloc[max(0, current_idx - n_period) : current_idx - 1]
                     try:
                         if current_timestamp_utc.tzinfo is None:
                             current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
                         else:
                             current_datetime_utc8 = current_timestamp_utc.tz_convert('Asia/Shanghai')
 
+                        # Default to daily high, will be updated if hourly calculation is successful
+                        effective_current_day_high = daily_high_for_signal_fallback
+
+                        try:
+                            current_day_start_utc = current_timestamp_utc.normalize()
+                            buy_window_end_hour, buy_window_end_minute = map(int, self.signal_generator.buy_window_end_str.split(':'))
+
+                            target_buy_limit_datetime_utc8 = current_datetime_utc8.replace(
+                                hour=buy_window_end_hour,
+                                minute=buy_window_end_minute,
+                                second=0,
+                                microsecond=0
+                            )
+                            target_buy_hourly_limit_utc = target_buy_limit_datetime_utc8.tz_convert('UTC')
+
+                            # Additional filter: ensure hourly data is within the current day being processed by the daily loop
+                            # This avoids looking at hourly data from previous days if target_buy_hourly_limit_utc is very early.
+                            # And also ensures we don't look into the next day's hourly data.
+                            current_day_end_utc = current_day_start_utc + pd.Timedelta(days=1)
+
+                            hourly_candles_before_buy_limit = self.hourly_historical_data[
+                                (self.hourly_historical_data['timestamp'] >= current_day_start_utc) &
+                                (self.hourly_historical_data['timestamp'] < target_buy_hourly_limit_utc) & # Strictly before the limit
+                                (self.hourly_historical_data['timestamp'] < current_day_end_utc) # And within the current day
+                            ]
+
+                            if not hourly_candles_before_buy_limit.empty:
+                                calculated_hourly_high = hourly_candles_before_buy_limit['high'].max()
+                                if pd.notna(calculated_hourly_high):
+                                    logging.info(f"Timestamp {current_timestamp_utc}: Calculated current_day_high for signal from hourly data: {calculated_hourly_high:.2f} (up to {target_buy_hourly_limit_utc} UTC)")
+                                    effective_current_day_high = calculated_hourly_high
+                                else:
+                                    logging.warning(f"Timestamp {current_timestamp_utc}: Max high from hourly data for signal is NaN. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
+                            else:
+                                logging.info(f"Timestamp {current_timestamp_utc}: No hourly candles found before {target_buy_hourly_limit_utc} UTC for signal's current_day_high. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
+
+                        except Exception as e_hourly_high_signal:
+                            logging.error(f"Timestamp {current_timestamp_utc}: Error calculating current_day_high for signal from hourly data: {e_hourly_high_signal}. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
+
                         buy_signal = self.signal_generator.check_breakout_signal(
                             daily_ohlcv_data=historical_data_for_signal,
-                            current_day_high=current_day_high,
+                            current_day_high=effective_current_day_high,
                             current_datetime_utc8=current_datetime_utc8
                         )
                     except Exception as e:
