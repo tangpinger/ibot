@@ -343,6 +343,8 @@ class BacktestingEngine:
 
             # Process BUY Signal
             if buy_signal == "BUY":
+                timestamp_for_buy_order = current_timestamp_utc # Initialize with daily timestamp as per requirement
+
                 # Ensure we are not already holding assets before buying
                 if self.portfolio['asset_qty'] == 0:
                     # Determine the price for the BUY order using hourly data
@@ -368,6 +370,9 @@ class BacktestingEngine:
                             selected_hourly_candle = exact_hourly_candle.iloc[0]
                             price_for_buy_order = selected_hourly_candle['open']
                             buy_executed_at_specific_time = True
+                            # Update timestamp for buy order and log
+                            timestamp_for_buy_order = selected_hourly_candle['timestamp']
+                            logging.info(f"BUY order will use timestamp from hourly candle: {timestamp_for_buy_order}")
                             logging.info(
                                 f"BUY signal: Using HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
                                 f"{selected_hourly_candle['timestamp']} (UTC) for order (target: {buy_window_end_str} UTC+8)."
@@ -389,6 +394,9 @@ class BacktestingEngine:
                                 selected_hourly_candle = alternative_hourly_candles.iloc[0]
                                 price_for_buy_order = selected_hourly_candle['open']
                                 buy_executed_at_specific_time = True
+                                # Update timestamp for buy order and log
+                                timestamp_for_buy_order = selected_hourly_candle['timestamp']
+                                logging.info(f"BUY order will use timestamp from hourly candle: {timestamp_for_buy_order}")
                                 logging.info(
                                     f"BUY signal: Using alternative HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
                                     f"{selected_hourly_candle['timestamp']} (UTC) as primary target was missed (within same day)."
@@ -398,10 +406,16 @@ class BacktestingEngine:
                                     f"BUY signal: No suitable alternative hourly candle found on {target_buy_datetime_utc.date()} (UTC) at or after {buy_window_end_str} UTC+8. "
                                     f"Falling back to DAILY CLOSE price {current_close_price:.2f} from daily candle at {current_timestamp_utc}."
                                 )
+                                # This is a point of fallback to daily price, log daily timestamp usage later if buy_executed_at_specific_time is False
 
                     except Exception as e:
                         logging.error(f"BUY signal: Error determining buy price using buy_window_end_time ('{buy_window_end_str}'): {e}. "
                                       f"Falling back to DAILY CLOSE price {current_close_price:.2f} from daily candle at {current_timestamp_utc}.")
+                        # Exception implies fallback, log daily timestamp usage later if buy_executed_at_specific_time is False
+
+                    # Log which timestamp is being used for the order if falling back to daily price
+                    if not buy_executed_at_specific_time:
+                        logging.info(f"BUY order will use timestamp from daily candle: {timestamp_for_buy_order}")
 
                     cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
                     if price_for_buy_order > 0: # Use the determined price for buy order
@@ -409,7 +423,7 @@ class BacktestingEngine:
                         if quantity_to_buy > 0:
                             logging.info(f"Timestamp {current_timestamp_utc}: BUY signal. Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f} (Specific time target: {'Yes' if buy_executed_at_specific_time else 'No - Fallback used'}).")
                             self._simulate_order(
-                                timestamp=current_timestamp_utc, # Daily candle's timestamp for trade record
+                                timestamp=timestamp_for_buy_order, # Use the determined timestamp for the order
                                 order_type='BUY',
                                 symbol=symbol,
                                 price=price_for_buy_order, # Price from hourly data (or daily fallback)
@@ -421,6 +435,8 @@ class BacktestingEngine:
 
             # SELL Logic (Holding Period Based)
             # This logic is independent of SignalGenerator and checked on each iteration if assets are held.
+            timestamp_for_sell_order = current_timestamp_utc # Initialize with daily timestamp
+
             if self.portfolio['asset_qty'] > 0 and self.portfolio.get('asset_entry_timestamp_utc') is not None:
                 entry_ts_utc = self.portfolio['asset_entry_timestamp_utc']
                 # Ensure current_timestamp_utc and entry_ts_utc are pandas Timestamps and UTC localized
@@ -475,6 +491,8 @@ class BacktestingEngine:
                     if not relevant_hourly_candles_for_sell.empty:
                         selected_hourly_candle_for_sell = relevant_hourly_candles_for_sell.iloc[0]
                         price_for_sell_order = selected_hourly_candle_for_sell['open']
+                        timestamp_for_sell_order = selected_hourly_candle_for_sell['timestamp'] # Update timestamp
+                        logging.info(f"SELL order will use timestamp from hourly candle: {timestamp_for_sell_order}")
                         logging.info(
                             f"SELL condition: Using HOURLY OPEN price {price_for_sell_order:.2f} from candle at "
                             f"{selected_hourly_candle_for_sell['timestamp']} (UTC) for order. Searched from {search_start_utc} (UTC) within the same day."
@@ -482,6 +500,7 @@ class BacktestingEngine:
                     else:
                         daily_close_price_for_fallback = getattr(row, 'close')
                         price_for_sell_order = daily_close_price_for_fallback
+                        logging.info(f"SELL order will use timestamp from daily candle: {timestamp_for_sell_order}")
                         logging.warning(
                             f"SELL condition: No hourly candle found at or after {search_start_utc} (UTC) on {search_start_utc.date()} (UTC). "
                             f"Falling back to DAILY CLOSE price {price_for_sell_order:.2f} from daily candle at {current_timestamp_utc}."
@@ -491,7 +510,7 @@ class BacktestingEngine:
                     if quantity_to_sell > 0:
                         logging.info(f"Attempting to SELL {quantity_to_sell:.4f} {symbol} at determined price {price_for_sell_order:.2f}")
                         self._simulate_order(
-                            timestamp=current_timestamp_utc, # Daily candle's timestamp for trade record
+                            timestamp=timestamp_for_sell_order, # Use the determined timestamp for the order
                             order_type='SELL',
                             symbol=symbol,
                             price=price_for_sell_order, # Price from hourly open (or daily close fallback)
