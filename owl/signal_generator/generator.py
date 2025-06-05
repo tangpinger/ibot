@@ -134,7 +134,8 @@ class SignalGenerator:
         day_of_week = current_datetime_utc8.weekday() # Monday is 0 and Sunday is 6
         current_time_utc8 = current_datetime_utc8.time()
 
-        is_valid_buy_day = day_of_week in [0, 1, 4] # Mon, Tue, Fri
+        is_valid_buy_day = True 
+        # is_valid_buy_day = day_of_week in [0, 1, 4] # Mon, Tue, Fri
 
         if not is_valid_buy_day:
             print(f"SignalGenerator: Breakout occurred, but today ({current_datetime_utc8.strftime('%A')}) is not a valid buy day (Mon, Tue, Fri).")

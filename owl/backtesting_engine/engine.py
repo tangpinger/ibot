@@ -499,7 +499,6 @@ class BacktestingEngine:
                 # Mon (day 0). Tue (day 1). Wed (day 2). Sell if days_passed >= hold_period + 1
                 # If hold_period=0 days. Buy Mon. Sell Tue. Sell if days_passed >= 1
                 days_passed = (current_ts_utc_localized.normalize() - entry_ts_utc.normalize()).days
-
                 current_dt_utc8_for_sell_check = current_ts_utc_localized.tz_convert('Asia/Shanghai')
                 current_time_utc8 = current_dt_utc8_for_sell_check.time()
 
