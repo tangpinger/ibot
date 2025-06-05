@@ -469,6 +469,7 @@ class BacktestingEngine:
                         quantity_to_buy = cash_to_spend_on_buy / price_for_buy_order
                         if quantity_to_buy > 0:
                             logging.info(f"Timestamp {current_timestamp_utc}: BUY signal. Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f} (Specific time target: {'Yes' if buy_executed_at_specific_time else 'No - Fallback used'}).")
+                            print(f"day_N_plus_1_timestamp is {day_N_plus_1_timestamp.tz_convert('Asia/Shanghai')}")
                             self._simulate_order(
                                 timestamp=timestamp_for_buy_order, # Use the determined timestamp for the order
                                 order_type='BUY',
