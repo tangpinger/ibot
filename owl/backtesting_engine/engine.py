@@ -407,6 +407,13 @@ class BacktestingEngine:
                         target_buy_datetime_utc8 = current_datetime_utc8.replace(hour=buy_hour, minute=buy_minute, second=0, microsecond=0)
                         target_buy_datetime_utc = target_buy_datetime_utc8.tz_convert('UTC')
 
+                        # if target_buy_datetime_utc < day_N_plus_1_timestamp:
+                        #     print(f"Warning: Target buy time {target_buy_datetime_utc} (UTC) is before Day D-1 timestamp {day_N_plus_1_timestamp} (UTC). Adjusting to Day D-1 timestamp.")
+                        #     raise ValueError(
+                        #         f"Target buy time {target_buy_datetime_utc} (UTC) is before Day D-1 timestamp {day_N_plus_1_timestamp} (UTC). "
+                        #         f"Adjusting to Day D-1 timestamp for buy order price lookup."
+                        #     ) 
+
                         logging.info(f"BUY signal: Attempting to find hourly candle for buy time {buy_window_end_str} UTC+8 (target UTC: {target_buy_datetime_utc}).")
 
                         # TODO: Resolve issue with hourly candle lookup for buy orders.
