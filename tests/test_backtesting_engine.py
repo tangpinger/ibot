@@ -1012,6 +1012,176 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
 
         self.assertEqual(called_output_path, expected_filename)
 
+    @patch('owl.backtesting_engine.engine.logging')
+    @patch(PATCH_PATH_SG) # Ensure SG is patched if engine instantiates it
+    def test_day_N_plus_1_timestamp_uses_hourly_high(self, MockSignalGenerator, mock_logging):
+        """
+        Tests that day_N_plus_1_timestamp is derived from the hourly candle
+        with the highest 'high' on that day.
+        """
+        mock_sg_instance = MockSignalGenerator.return_value
+        mock_sg_instance.check_breakout_signal.return_value = None # No trading actions needed
+
+        test_config = self.sample_config.copy()
+        test_config['backtesting'] = self.sample_config['backtesting'].copy()
+        test_config['strategy'] = self.sample_config['strategy'].copy()
+
+        test_config['backtesting']['start_date'] = '2023-01-01'
+        test_config['backtesting']['end_date'] = '2023-01-04' # Loop up to and including 2023-01-04
+        test_config['strategy']['n_day_high_period'] = 2
+
+        # Daily data: current_idx = 3 (for 2023-01-04) makes day_N_plus_1_data_row = iloc[2] (2023-01-03)
+        daily_data = pd.DataFrame({
+            'timestamp': pd.to_datetime(['2023-01-01', '2023-01-02', '2023-01-03', '2023-01-04'], utc=True),
+            'open': [10, 20, 30, 40], 'high': [15, 25, 35, 45],
+            'low': [5, 15, 25, 35], 'close': [12, 22, 32, 42], 'volume': [100]*4
+        })
+
+        # Hourly data for 2023-01-03 (day_N_plus_1)
+        # Max high is 150 at 15:00
+        day_N_plus_1_date_str = '2023-01-03'
+        expected_highest_high_timestamp = pd.Timestamp(f'{day_N_plus_1_date_str} 15:00:00', tz='UTC')
+        hourly_data_for_day_N_plus_1 = pd.DataFrame({
+            'timestamp': pd.to_datetime([
+                f'{day_N_plus_1_date_str} 10:00:00',
+                f'{day_N_plus_1_date_str} 15:00:00', # Max high
+                f'{day_N_plus_1_date_str} 20:00:00'
+            ], utc=True),
+            'open': [100, 140, 110],
+            'high': [105, 150, 120], # Max high is 150
+            'low': [95, 135, 105],
+            'close': [102, 145, 115],
+            'volume': [1000, 1000, 1000]
+        })
+
+        # Combine with some other hourly data to ensure filtering works
+        other_hourly_data = pd.DataFrame({
+            'timestamp': pd.to_datetime(['2023-01-01 10:00:00', '2023-01-04 10:00:00'], utc=True),
+            'open': [1,1], 'high': [2,2], 'low': [0,0], 'close': [1,1], 'volume': [1,1]
+        })
+        all_hourly_data = pd.concat([hourly_data_for_day_N_plus_1, other_hourly_data]).sort_values(by='timestamp').reset_index(drop=True)
+
+
+        def mock_fetch_ohlcv_custom(symbol, timeframe, since, limit=None, params=None, force_fetch=None):
+            since_ts = pd.Timestamp(since, unit='ms', tz='UTC')
+            if timeframe == '1d':
+                return daily_data[daily_data['timestamp'] >= since_ts.normalize()].copy()
+            elif timeframe == '1h':
+                return all_hourly_data[all_hourly_data['timestamp'] >= since_ts].copy()
+            return pd.DataFrame()
+
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = mock_fetch_ohlcv_custom
+
+        engine = BacktestingEngine(
+            config=test_config,
+            data_fetcher=self.mock_data_fetcher,
+            signal_generator=None # Engine creates its own, which is mocked
+        )
+        engine.run_backtest()
+
+        found_log = False
+        for log_call_args in mock_logging.info.call_args_list:
+            log_message = log_call_args[0][0] # Get the first positional argument of the call
+            if f"Extracted day_N_plus_1_timestamp from hourly data: {expected_highest_high_timestamp}" in log_message and \
+               f"based on highest hourly high for {pd.Timestamp(day_N_plus_1_date_str).date()} (UTC)" in log_message:
+                found_log = True
+                break
+        self.assertTrue(found_log, f"Expected log message for using hourly high timestamp {expected_highest_high_timestamp} not found.")
+
+    @patch('builtins.print')
+    @patch('owl.backtesting_engine.engine.logging')
+    @patch(PATCH_PATH_SG)
+    def test_day_N_plus_1_timestamp_fallback_to_daily(self, MockSignalGenerator, mock_logging, mock_print):
+        """
+        Tests that day_N_plus_1_timestamp falls back to the daily timestamp
+        if no hourly data is found for that day.
+        """
+        mock_sg_instance = MockSignalGenerator.return_value
+        mock_sg_instance.check_breakout_signal.return_value = None # No trading actions needed
+
+        test_config = self.sample_config.copy()
+        test_config['backtesting'] = self.sample_config['backtesting'].copy()
+        test_config['strategy'] = self.sample_config['strategy'].copy()
+
+        test_config['backtesting']['start_date'] = '2023-01-01'
+        test_config['backtesting']['end_date'] = '2023-01-04'
+        test_config['strategy']['n_day_high_period'] = 2
+
+        day_N_plus_1_daily_timestamp_utc = pd.Timestamp('2023-01-03 00:00:00', tz='UTC')
+
+        daily_data = pd.DataFrame({
+            'timestamp': pd.to_datetime(['2023-01-01', '2023-01-02', '2023-01-03', '2023-01-04'], utc=True),
+            'open': [10, 20, 30, 40], 'high': [15, 25, 35, 45],
+            'low': [5, 15, 25, 35], 'close': [12, 22, 32, 42], 'volume': [100]*4
+        })
+
+        # Hourly data is empty for 2023-01-03
+        hourly_data_empty_for_day_N_plus_1 = pd.DataFrame({
+            'timestamp': pd.to_datetime(['2023-01-01 10:00:00', '2023-01-04 10:00:00'], utc=True),
+            'open': [1,1], 'high': [2,2], 'low': [0,0], 'close': [1,1], 'volume': [1,1]
+        })
+
+        def mock_fetch_ohlcv_custom(symbol, timeframe, since, limit=None, params=None, force_fetch=None):
+            since_ts = pd.Timestamp(since, unit='ms', tz='UTC')
+            if timeframe == '1d':
+                return daily_data[daily_data['timestamp'] >= since_ts.normalize()].copy()
+            elif timeframe == '1h':
+                # Return data that does NOT include 2023-01-03
+                return hourly_data_empty_for_day_N_plus_1[hourly_data_empty_for_day_N_plus_1['timestamp'] >= since_ts].copy()
+            return pd.DataFrame()
+
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = mock_fetch_ohlcv_custom
+
+        engine = BacktestingEngine(
+            config=test_config,
+            data_fetcher=self.mock_data_fetcher,
+            signal_generator=None # Engine creates its own
+        )
+        engine.run_backtest()
+
+        found_warning_log = False
+        for log_call_args in mock_logging.warning.call_args_list:
+            log_message = log_call_args[0][0]
+            if f"No hourly data found for {day_N_plus_1_daily_timestamp_utc.date()} (UTC)." in log_message and \
+               f"Falling back to daily timestamp for day_N_plus_1_timestamp: {day_N_plus_1_daily_timestamp_utc} (UTC)" in log_message:
+                found_warning_log = True
+                break
+        self.assertTrue(found_warning_log, "Expected warning log for fallback to daily timestamp not found.")
+
+        # Check the print statement for day_N_plus_1_timestamp
+        # The engine prints it as: f"day_N_plus_1_timestamp is {day_N_plus_1_timestamp.tz_convert('Asia/Shanghai')}"
+        # So, the timestamp we check for should be the daily one, converted to Asia/Shanghai
+        expected_printed_timestamp_str_shanghai = day_N_plus_1_daily_timestamp_utc.tz_convert('Asia/Shanghai').strftime('%Y-%m-%d %H:%M:%S%z')
+
+        found_print_call = False
+        # Iterate through all calls to the mocked print function
+        for print_call_args in mock_print.call_args_list:
+            printed_string = print_call_args[0][0] # Get the first positional argument of the call
+            # Check if the string starts with the expected prefix
+            if printed_string.startswith("day_N_plus_1_timestamp is "):
+                # Extract the timestamp part. Example: "day_N_plus_1_timestamp is 2023-01-03 08:00:00+08:00"
+                # The actual printed format might include nanoseconds or other details not in strftime default.
+                # Robust check: parse the printed timestamp and compare.
+                try:
+                    # Attempt to parse the timestamp part of the string.
+                    # This part needs to be robust to how pandas Timestamp prints itself when tz_converted.
+                    # A simple string match might be fragile.
+                    # Let's assume the format is like 'YYYY-MM-DD HH:MM:SS+ZZ:ZZ' or similar.
+                    # A more direct check would be if the `day_N_plus_1_timestamp` object itself was captured.
+                    # Since we only have the string, we check for the expected representation.
+                    # The actual output from pandas is "2023-01-03 08:00:00+08:00" for this case.
+                    # Let's check if the expected string is present in the printed string.
+                    if expected_printed_timestamp_str_shanghai[:-2] in printed_string: # check without the '00' from %z for robustness
+                        found_print_call = True
+                        break
+                except Exception as e:
+                    # Log if parsing fails, to help debug the test itself
+                    print(f"Debug: Could not parse printed output for timestamp: '{printed_string}'. Error: {e}")
+                    pass
+
+        self.assertTrue(found_print_call, f"Expected print statement for day_N_plus_1_timestamp showing fallback value '{expected_printed_timestamp_str_shanghai}' not found or not matching. Check mock_print output.")
+
+
     @patch(PATCH_PATH_SG)
     @patch('owl.backtesting_engine.engine.logging')
     def test_buy_signal_on_N_plus_2_day_for_N_plus_1_breakout(self, mock_logging, MockSignalGenerator):

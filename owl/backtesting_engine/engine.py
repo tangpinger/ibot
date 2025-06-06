@@ -329,7 +329,29 @@ class BacktestingEngine:
                         # Day D-1 (N+1) data
                         day_N_plus_1_data_row = self.daily_historical_data.iloc[current_idx - offset]
                         day_N_plus_1_high = day_N_plus_1_data_row['high']
-                        day_N_plus_1_timestamp = day_N_plus_1_data_row['timestamp'] # For logging
+                        # day_N_plus_1_timestamp = day_N_plus_1_data_row['timestamp'] # For logging # Original logic replaced
+
+                        # New logic for day_N_plus_1_timestamp
+                        original_day_N_plus_1_timestamp = day_N_plus_1_data_row['timestamp'] # This is a pandas Timestamp (UTC)
+                        day_N_plus_1_date_utc = original_day_N_plus_1_timestamp.normalize() # Get start of the day in UTC
+
+                        # Filter hourly data for that specific day in UTC
+                        # self.hourly_historical_data['timestamp'] are pandas Timestamps (UTC)
+                        hourly_data_for_day = self.hourly_historical_data[
+                            (self.hourly_historical_data['timestamp'] >= day_N_plus_1_date_utc) &
+                            (self.hourly_historical_data['timestamp'] < (day_N_plus_1_date_utc + pd.Timedelta(days=1)))
+                        ]
+
+                        if not hourly_data_for_day.empty:
+                            # Find the row with the max 'high'
+                            row_with_max_high = hourly_data_for_day.loc[hourly_data_for_day['high'].idxmax()]
+                            day_N_plus_1_timestamp = row_with_max_high['timestamp']
+                            logging.info(f"Extracted day_N_plus_1_timestamp from hourly data: {day_N_plus_1_timestamp} (UTC) based on highest hourly high for {day_N_plus_1_date_utc.date()} (UTC).")
+                        else:
+                            # Fallback logic
+                            day_N_plus_1_timestamp = original_day_N_plus_1_timestamp # Use the original daily timestamp
+                            logging.warning(f"No hourly data found for {day_N_plus_1_date_utc.date()} (UTC). Falling back to daily timestamp for day_N_plus_1_timestamp: {day_N_plus_1_timestamp} (UTC).")
+                        # End of new logic for day_N_plus_1_timestamp
 
                         # Historical data for N days preceding Day D-1
                         # Slice from (current_idx - offset - n_period) up to (but not including) (current_idx - offset)
