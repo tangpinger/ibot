@@ -322,17 +322,18 @@ class BacktestingEngine:
                 # So, current_idx must be at least n_period + 1.
                 # Example: n_period=20.
                 # current_idx = 21 (Day D). Day D-1 is index 20. Hist data is index 0 to 19 (20 days).
-                if current_idx >= n_period + 1:
+                offset = 1
+                if current_idx >= n_period + offset:
                     try:
                         # Prepare data for check_breakout_signal
                         # Day D-1 (N+1) data
-                        day_N_plus_1_data_row = self.daily_historical_data.iloc[current_idx - 1]
+                        day_N_plus_1_data_row = self.daily_historical_data.iloc[current_idx - offset]
                         day_N_plus_1_high = day_N_plus_1_data_row['high']
                         day_N_plus_1_timestamp = day_N_plus_1_data_row['timestamp'] # For logging
 
                         # Historical data for N days preceding Day D-1
-                        # Slice from (current_idx - 1 - n_period) up to (but not including) (current_idx - 1)
-                        historical_data_for_signal = self.daily_historical_data.iloc[current_idx - 1 - n_period : current_idx - 1]
+                        # Slice from (current_idx - offset - n_period) up to (but not including) (current_idx - offset)
+                        historical_data_for_signal = self.daily_historical_data.iloc[current_idx - offset - n_period: current_idx - offset]
 
                         logging.info(f"Timestamp {current_timestamp_utc} (Day D): Preparing to check breakout for Day D-1 ({day_N_plus_1_timestamp}).")
                         logging.info(f"Day D-1's High: {day_N_plus_1_high}. Historical data for signal: {len(historical_data_for_signal)} rows (from index {current_idx - 1 - n_period} to {current_idx - 2}).")
