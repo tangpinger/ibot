@@ -465,68 +465,60 @@ class BacktestingEngine:
                 else:
                     logging.info(f"BUY signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Signal received, but already holding assets (checked at D: {current_timestamp_utc.strftime('%Y-%m-%d')}). Skipping buy.")
 
-            # SELL Logic (Stop-Loss based on hourly lows during holding period on current day D)
-            if self.portfolio['asset_qty'] > 0 and self.portfolio.get('asset_entry_timestamp_utc') is not None:
-                asset_entry_price = self.portfolio['asset_entry_price']
-                asset_entry_timestamp_utc = self.portfolio['asset_entry_timestamp_utc']
-
-                # Define the observation window for the current day `current_timestamp_utc` (which is D's daily timestamp)
-                # The holding period starts from the actual entry time of the asset.
-                # The new sell logic checks hourly lows on day D *within* self.holding_period_hours *from the start of day D*.
-                # This means we are checking for a stop-loss condition during a window on day D.
-
-                # Ensure current_timestamp_utc is properly timezone-aware (it should be from the loop)
+            # New SELL Logic
+            if self.portfolio['asset_qty'] > 0:
+                # current_timestamp_utc is D's daily timestamp from the main loop
+                # Ensure current_timestamp_utc is properly timezone-aware and normalized (start of the day)
                 if current_timestamp_utc.tzinfo is None:
                     current_day_start_utc = pytz.utc.localize(current_timestamp_utc).normalize()
                 else:
-                    current_day_start_utc = current_timestamp_utc.normalize() # current_timestamp_utc is D's daily timestamp
+                    current_day_start_utc = current_timestamp_utc.normalize()
 
-                # The observation window for stop-loss check ends `self.holding_period_hours` from the start of day D.
-                # This is an interpretation of "price drops below entry price within holding_period_hours".
-                # This means on any given day D, we monitor hourly lows for `holding_period_hours` from market open (00:00 UTC of day D).
-                observation_window_end_utc = current_day_start_utc + pd.Timedelta(hours=self.holding_period_hours)
+                observation_end_time_utc = current_day_start_utc + pd.Timedelta(hours=self.holding_period_hours)
 
-                logging.debug(f"SELL Check (Day D: {current_day_start_utc.strftime('%Y-%m-%d')}): Asset entry price: {asset_entry_price:.2f}. Stop-loss observation window: {current_day_start_utc.strftime('%H:%M')} to {observation_window_end_utc.strftime('%H:%M')} UTC.")
+                logging.info(f"SELL Check (Day D: {current_day_start_utc.strftime('%Y-%m-%d')}): Holding {self.portfolio['asset_qty']} units. Observation end time for sell: {observation_end_time_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
-                # Filter hourly data for the observation window on the current day D
-                relevant_hourly_candles_for_sell = self.hourly_historical_data[
-                    (self.hourly_historical_data['timestamp'] >= current_day_start_utc) &
-                    (self.hourly_historical_data['timestamp'] < observation_window_end_utc) # Strictly before the window ends
-                ].sort_values(by='timestamp')
-
-                triggered_sell = False
                 sell_price = 0.0
                 timestamp_for_sell_order = None
+                sell_reason = ""
 
-                if not relevant_hourly_candles_for_sell.empty:
-                    for i, candle_row in enumerate(relevant_hourly_candles_for_sell.itertuples(index=False)):
-                        # getattr is safer if columns might be missing, though standard OHLCV should have 'low' and 'timestamp'
-                        candle_low = getattr(candle_row, 'low', float('inf'))
-                        candle_timestamp = getattr(candle_row, 'timestamp')
+                # 1. Find the hourly OHLCV candle where the timestamp matches observation_end_time_utc
+                exact_match_candle = self.hourly_historical_data[
+                    self.hourly_historical_data['timestamp'] == observation_end_time_utc
+                ]
 
-                        if candle_low < asset_entry_price:
-                            logging.info(f"SELL TRIGGER (Stop-Loss on Day D: {current_day_start_utc.strftime('%Y-%m-%d')}): Hourly candle at {candle_timestamp} (UTC) with low {candle_low:.2f} < entry price {asset_entry_price:.2f}.")
-                            triggered_sell = True
-
-                            # Determine sell price: open of next candle, or close of current if no next.
-                            if i + 1 < len(relevant_hourly_candles_for_sell):
-                                next_candle = relevant_hourly_candles_for_sell.iloc[i+1]
-                                sell_price = getattr(next_candle, 'open')
-                                timestamp_for_sell_order = getattr(next_candle, 'timestamp')
-                                logging.info(f"Attempting to sell at OPEN of next hourly candle: {sell_price:.2f} at {timestamp_for_sell_order} (UTC).")
-                            else:
-                                sell_price = getattr(candle_row, 'close') # Fallback to close of triggering candle
-                                timestamp_for_sell_order = candle_timestamp
-                                logging.info(f"Attempting to sell at CLOSE of triggering hourly candle (last in observation window or data): {sell_price:.2f} at {timestamp_for_sell_order} (UTC).")
-                            break # Exit loop once triggered
+                if not exact_match_candle.empty:
+                    sell_price = exact_match_candle.iloc[0]['open']
+                    timestamp_for_sell_order = exact_match_candle.iloc[0]['timestamp']
+                    sell_reason = f"Exact observation_end_time candle found at {timestamp_for_sell_order} UTC. Sell price (open): {sell_price:.2f}"
+                    logging.info(sell_reason)
                 else:
-                    logging.debug(f"SELL Check (Day D: {current_day_start_utc.strftime('%Y-%m-%d')}): No hourly candles found within the observation window [{current_day_start_utc.strftime('%H:%M')}-{observation_window_end_utc.strftime('%H:%M')} UTC].")
+                    # 2. If no exact match, search for the first available hourly candle *after* observation_end_time_utc
+                    #    but *before* the start of the next day.
+                    next_day_start_utc = current_day_start_utc + pd.Timedelta(days=1)
 
+                    alternative_candles = self.hourly_historical_data[
+                        (self.hourly_historical_data['timestamp'] > observation_end_time_utc) &
+                        (self.hourly_historical_data['timestamp'] < next_day_start_utc)
+                    ].sort_values(by='timestamp')
 
-                if triggered_sell:
+                    if not alternative_candles.empty:
+                        sell_price = alternative_candles.iloc[0]['open']
+                        timestamp_for_sell_order = alternative_candles.iloc[0]['timestamp']
+                        sell_reason = (f"Exact observation_end_time candle NOT found. "
+                                       f"Using next available candle on {current_day_start_utc.strftime('%Y-%m-%d')} at {timestamp_for_sell_order} UTC. Sell price (open): {sell_price:.2f}")
+                        logging.info(sell_reason)
+                    else:
+                        sell_reason = (f"No suitable hourly candle found for selling on {current_day_start_utc.strftime('%Y-%m-%d')}. "
+                                       f"Neither exact match for {observation_end_time_utc.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                                       f"nor any subsequent candle on the same day.")
+                        logging.warning(sell_reason)
+                        # Do not place a sell order for this day.
+
+                if sell_price > 0 and timestamp_for_sell_order is not None:
                     quantity_to_sell = self.portfolio['asset_qty'] * self.sell_asset_percentage
-                    if quantity_to_sell > 0 and sell_price > 0 and timestamp_for_sell_order is not None:
-                        logging.info(f"Executing SELL order (Stop-Loss): {quantity_to_sell:.4f} {symbol} at {sell_price:.2f}. Order timestamp: {timestamp_for_sell_order}")
+                    if quantity_to_sell > 0:
+                        logging.info(f"Attempting to execute SELL order: {quantity_to_sell:.4f} {symbol} at {sell_price:.2f}. Order timestamp: {timestamp_for_sell_order}. Reason: {sell_reason}")
                         self._simulate_order(
                             timestamp=timestamp_for_sell_order,
                             order_type='SELL',
@@ -534,10 +526,11 @@ class BacktestingEngine:
                             price=sell_price,
                             quantity=quantity_to_sell
                         )
-                    elif not (sell_price > 0):
-                        logging.warning(f"SELL TRIGGERED but sell_price is not valid ({sell_price}). Order not placed.")
-                    elif timestamp_for_sell_order is None:
-                        logging.warning(f"SELL TRIGGERED but timestamp_for_sell_order is None. Order not placed.")
+                    else:
+                        logging.warning(f"Calculated quantity_to_sell is not positive ({quantity_to_sell}). Sell order not placed. Sell price was {sell_price:.2f}.")
+                elif timestamp_for_sell_order is not None: # Implies sell_price was <= 0
+                     logging.warning(f"Sell price determined was not positive ({sell_price}). Sell order not placed. Timestamp was {timestamp_for_sell_order}.")
+                # If timestamp_for_sell_order is None, it means no suitable candle was found, and a warning was already logged.
 
 
             self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc) # uses D's close and D's timestamp

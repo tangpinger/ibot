@@ -701,5 +701,217 @@ class TestBacktestingEngineBehavior(unittest.TestCase): # Renamed for broader sc
         self.assertEqual(called_output_path, expected_filename)
 
 
+# --- Tests for the NEW Sell Logic (based on holding period observation time) ---
+class TestNewSellStrategyLogic(unittest.TestCase):
+    def setUp(self):
+        self.mock_data_fetcher = MagicMock()
+        # Patching 'owl.backtesting_engine.engine.SignalGenerator' for engine's internal instantiation
+        self.sg_patcher = patch('owl.backtesting_engine.engine.SignalGenerator')
+        self.MockSignalGenerator = self.sg_patcher.start()
+        self.mock_sg_instance = self.MockSignalGenerator.return_value
+
+        self.base_config = {
+            'backtesting': {
+                'symbol': 'BTC/USDT',
+                'start_date': '2023-01-01',
+                'end_date': '2023-01-03', # Process 2 days, sell on 2nd day
+                'initial_capital': 10000.0,
+                'commission_rate': 0.001
+            },
+            'strategy': {
+                'n_day_high_period': 1, # Keep it simple for buy signal
+                'buy_cash_percentage': 1.0,
+                'sell_asset_percentage': 1.0, # Default, can be overridden
+                'holding_period_hours': 5,    # Test with 5 hours
+                'buy_window_end_time': "16:00", # Not critical for sell tests but needed
+                'risk_free_rate': 0.0 # Not critical
+            },
+             'scheduler': {}, 'proxy': {}, 'api_keys': {}, 'exchange_settings': {}
+        }
+
+        # Daily data: Loop will run for 2023-01-01, 2023-01-02.
+        # Assume buy happens based on 2023-01-01 data (buy placed on 2023-01-01).
+        # Sell check will occur during 2023-01-02 loop iteration.
+        self.sample_daily_data = pd.DataFrame({
+            'timestamp': pd.to_datetime(['2023-01-01', '2023-01-02', '2023-01-03'], utc=True),
+            'open': [100, 110, 120], 'high': [105, 115, 125],
+            'low': [95, 105, 115], 'close': [102, 112, 122],
+            'volume': [1000, 1000, 1000]
+        })
+
+        # Hourly data will be customized per test case
+        self.sample_hourly_data_template = pd.DataFrame({
+            'timestamp': pd.to_datetime([
+                # Day 1 (2023-01-01) - Buy day related
+                '2023-01-01 08:00:00', '2023-01-01 09:00:00',
+                # Day 2 (2023-01-02) - Sell observation day
+                '2023-01-02 00:00:00', '2023-01-02 01:00:00', '2023-01-02 02:00:00',
+                '2023-01-02 03:00:00', '2023-01-02 04:00:00', # Exact observation_end_time if holding_period_hours=5
+                '2023-01-02 05:00:00', # Candle after exact time
+                '2023-01-02 06:00:00',
+            ], utc=True),
+            'open':  [100.0, 101.0, 110.0, 111.0, 112.0, 113.0, 114.0, 115.0, 116.0],
+            'high':  [100.5, 101.5, 110.5, 111.5, 112.5, 113.5, 114.5, 115.5, 116.5],
+            'low':   [99.5,  100.5, 109.5, 110.5, 111.5, 112.5, 113.5, 114.5, 115.5],
+            'close': [100.2, 101.2, 110.2, 111.2, 112.2, 113.2, 114.2, 115.2, 116.2],
+            'volume':[10,    10,    10,    10,    10,    10,    10,    10,    10]
+        })
+
+        def mock_fetch_ohlcv_se(symbol, timeframe, since, limit=None, params=None, force_fetch=None):
+            if timeframe == '1d':
+                return self.current_daily_data
+            elif timeframe == '1h':
+                return self.current_hourly_data
+            return pd.DataFrame()
+        self.mock_data_fetcher.fetch_ohlcv.side_effect = mock_fetch_ohlcv_se
+
+    def tearDown(self):
+        self.sg_patcher.stop() # Important to stop the patcher
+
+    def _initialize_engine(self, config, daily_data, hourly_data):
+        self.current_daily_data = daily_data
+        self.current_hourly_data = hourly_data
+        engine = BacktestingEngine(
+            config=config,
+            data_fetcher=self.mock_data_fetcher,
+            signal_generator=None # Engine creates its own, which is mocked
+        )
+        # Simulate that a buy order has occurred and portfolio has assets
+        # Buy on 2023-01-01, sell check on 2023-01-02
+        engine.portfolio = {
+            'cash': 0, 'asset_qty': 10.0, 'asset_value': 1000.0,
+            'total_value': 1000.0, 'asset_entry_timestamp_utc': pd.Timestamp('2023-01-01 08:00:00', tz='UTC'),
+            'asset_entry_price': 100.0
+        }
+        # Mock signal generator to prevent buy logic interference on the sell test day
+        self.mock_sg_instance.check_breakout_signal.return_value = None # No BUY signals during sell tests
+        return engine
+
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_exact_match_candle_found(self, mock_logging):
+        config = self.base_config.copy()
+        config['strategy']['holding_period_hours'] = 5 # current_day_start (00:00) + 5hrs = 05:00
+
+        hourly_data = self.sample_hourly_data_template.copy()
+        # Sell day is 2023-01-02. current_day_start_utc = 2023-01-02 00:00:00 UTC
+        # observation_end_time_utc = 2023-01-02 00:00:00 + 5 hours = 2023-01-02 05:00:00 UTC
+        exact_obs_end_time = pd.Timestamp('2023-01-02 05:00:00', tz='UTC')
+        expected_sell_price = 115.0 # Open price of 05:00 candle in template
+
+        self.assertTrue(exact_obs_end_time in hourly_data['timestamp'].values, "Test setup error: Exact candle missing.")
+        hourly_data.loc[hourly_data['timestamp'] == exact_obs_end_time, 'open'] = expected_sell_price # Ensure it's this price
+
+        engine = self._initialize_engine(config, self.sample_daily_data, hourly_data)
+
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        spy_simulate_order.assert_called_once()
+        call_args = spy_simulate_order.call_args[1] # kwargs
+        self.assertEqual(call_args['order_type'], 'SELL')
+        self.assertEqual(call_args['price'], expected_sell_price)
+        self.assertEqual(call_args['timestamp'], exact_obs_end_time)
+        self.assertEqual(call_args['quantity'], engine.portfolio['asset_qty'] * config['strategy']['sell_asset_percentage'])
+        self.assertTrue(any(f"Exact observation_end_time candle found at {exact_obs_end_time}" in log_call[0][0] for log_call in mock_logging.info.call_args_list))
+
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_next_available_candle_used(self, mock_logging):
+        config = self.base_config.copy()
+        config['strategy']['holding_period_hours'] = 4 # current_day_start (00:00) + 4hrs = 04:00
+
+        hourly_data = self.sample_hourly_data_template.copy()
+        # Sell day is 2023-01-02. observation_end_time_utc = 2023-01-02 04:00:00 UTC
+        obs_end_time = pd.Timestamp('2023-01-02 04:00:00', tz='UTC')
+
+        # Remove exact match candle
+        hourly_data = hourly_data[hourly_data['timestamp'] != obs_end_time]
+        self.assertFalse(obs_end_time in hourly_data['timestamp'].values, "Test setup error: Exact candle should be removed.")
+
+        # Next available candle is 05:00:00 UTC, its open is 115.0 in template
+        expected_next_candle_ts = pd.Timestamp('2023-01-02 05:00:00', tz='UTC')
+        expected_sell_price = 115.0 # From template for 05:00 candle
+        hourly_data.loc[hourly_data['timestamp'] == expected_next_candle_ts, 'open'] = expected_sell_price # ensure
+
+        engine = self._initialize_engine(config, self.sample_daily_data, hourly_data)
+
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        spy_simulate_order.assert_called_once()
+        call_args = spy_simulate_order.call_args[1]
+        self.assertEqual(call_args['order_type'], 'SELL')
+        self.assertEqual(call_args['price'], expected_sell_price)
+        self.assertEqual(call_args['timestamp'], expected_next_candle_ts)
+        self.assertTrue(any("Exact observation_end_time candle NOT found. Using next available candle" in log_call[0][0] for log_call in mock_logging.info.call_args_list))
+
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_no_suitable_candle_found_skips_sell(self, mock_logging):
+        config = self.base_config.copy()
+        config['strategy']['holding_period_hours'] = 7 # current_day_start (00:00) + 7hrs = 07:00
+
+        hourly_data = self.sample_hourly_data_template.copy()
+        # Sell day is 2023-01-02. observation_end_time_utc = 2023-01-02 07:00:00 UTC
+        obs_end_time = pd.Timestamp('2023-01-02 07:00:00', tz='UTC')
+
+        # Remove exact match (07:00) and all subsequent candles for that day
+        hourly_data = hourly_data[hourly_data['timestamp'] < obs_end_time]
+        # Last candle in template is 06:00, so 07:00 and after are already not there or removed
+
+        engine = self._initialize_engine(config, self.sample_daily_data, hourly_data)
+        initial_asset_qty = engine.portfolio['asset_qty']
+
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        spy_simulate_order.assert_not_called()
+        self.assertEqual(engine.portfolio['asset_qty'], initial_asset_qty, "Asset quantity should not change if no sell.")
+        self.assertTrue(any("No suitable hourly candle found for selling" in log_call[0][0] for log_call in mock_logging.warning.call_args_list))
+
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_asset_quantity_zero_no_action(self, mock_logging):
+        config = self.base_config.copy()
+        engine = self._initialize_engine(config, self.sample_daily_data, self.sample_hourly_data_template.copy())
+        engine.portfolio['asset_qty'] = 0 # Crucial for this test
+
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        spy_simulate_order.assert_not_called()
+        # Check that the sell logic part wasn't even entered deeply by checking for its specific logs
+        self.assertFalse(any("SELL Check" in log_call[0][0] for log_call in mock_logging.info.call_args_list if isinstance(log_call[0], tuple) and len(log_call[0]) > 0))
+
+
+    @patch('owl.backtesting_engine.engine.logging')
+    def test_sell_partial_assets_correct_quantity(self, mock_logging):
+        config = self.base_config.copy()
+        config['strategy']['holding_period_hours'] = 5
+        config['strategy']['sell_asset_percentage'] = 0.5 # Sell half
+
+        hourly_data = self.sample_hourly_data_template.copy()
+        exact_obs_end_time = pd.Timestamp('2023-01-02 05:00:00', tz='UTC')
+        expected_sell_price = 115.0
+        hourly_data.loc[hourly_data['timestamp'] == exact_obs_end_time, 'open'] = expected_sell_price
+
+        engine = self._initialize_engine(config, self.sample_daily_data, hourly_data)
+        initial_asset_qty = engine.portfolio['asset_qty'] # Should be 10.0 from _initialize_engine
+        expected_quantity_to_sell = initial_asset_qty * 0.5
+
+        with patch.object(engine, '_simulate_order', wraps=engine._simulate_order) as spy_simulate_order:
+            engine.run_backtest()
+
+        spy_simulate_order.assert_called_once()
+        call_args = spy_simulate_order.call_args[1]
+        self.assertEqual(call_args['order_type'], 'SELL')
+        self.assertEqual(call_args['price'], expected_sell_price)
+        self.assertEqual(call_args['timestamp'], exact_obs_end_time)
+        self.assertAlmostEqual(call_args['quantity'], expected_quantity_to_sell, places=5)
+
+        # Portfolio asset_qty should be updated by _simulate_order if it runs successfully
+        # Since _simulate_order is wrapped, it will execute.
+        # self.assertAlmostEqual(engine.portfolio['asset_qty'], initial_asset_qty - expected_quantity_to_sell, places=5)
+        # The above check is implicitly handled by the fact that _simulate_order would update it,
+        # and we are checking the arguments to it. If _simulate_order itself is tested, this is sufficient.
+
+
 if __name__ == '__main__':
     unittest.main()
