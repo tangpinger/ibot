@@ -44,16 +44,26 @@ class BacktestingEngine:
             n_day_high_period = int(strategy_conf['n_day_high_period'])
             # self.m_day_low_period removed
             self.sell_asset_percentage = float(strategy_conf.get('sell_asset_percentage', 1.0)) # Default to 1.0
-            self.holding_period_days = int(strategy_conf.get('holding_period_days', 1)) # Default to 1 day
+            try:
+                self.holding_period_hours = int(strategy_conf['holding_period_hours'])
+            except KeyError:
+                raise ValueError("Missing critical key 'holding_period_hours' in [strategy] configuration.")
+            except ValueError as e: # Catches if conversion to int fails
+                raise ValueError(f"Error processing 'holding_period_hours': {e}. It must be an integer.") from e
+            if self.holding_period_hours <= 0:
+                raise ValueError("'holding_period_hours' must be a positive integer.")
 
-            buy_window_start_time_str = strategy_conf.get('buy_window_start_time')
+            # buy_window_start_time_str = strategy_conf.get('buy_window_start_time') # No longer used by engine or SG
             buy_window_end_time_str = strategy_conf.get('buy_window_end_time')
 
             self.sell_window_start_str = strategy_conf.get('sell_window_start_time', "09:00") # Default from problem desc
             self.sell_window_end_str = strategy_conf.get('sell_window_end_time', "10:00")   # Default from problem desc
 
-            if not all([buy_window_start_time_str, buy_window_end_time_str]): # sell times have defaults
-                raise ValueError("Missing buy_window_start_time or buy_window_end_time in [strategy]")
+            # if not all([buy_window_start_time_str, buy_window_end_time_str]): # sell times have defaults
+            #     raise ValueError("Missing buy_window_start_time or buy_window_end_time in [strategy]")
+            # Updated validation:
+            if not buy_window_end_time_str:
+                raise ValueError("Missing critical key 'buy_window_end_time' in [strategy] configuration.")
 
             try:
                 self.sell_window_start_time = datetime.strptime(self.sell_window_start_str, "%H:%M").time()
@@ -71,11 +81,12 @@ class BacktestingEngine:
              raise ValueError("Error: Configuration section is missing or malformed.")
 
         self.signal_generator = SignalGenerator(
-            n_day_high_period=n_day_high_period,
-            buy_window_start_time_str=buy_window_start_time_str,
-            buy_window_end_time_str=buy_window_end_time_str
-            # m_day_low_period and sell window times are engine-specific for sell logic
+            n_day_high_period=n_day_high_period
         )
+
+        # Store buy_window_end_time_str for determining target buy time in engine
+        self.buy_window_end_config_str = buy_window_end_time_str
+        # buy_window_start_time_str is no longer retrieved or stored if not used.
 
         self.portfolio = {
             'cash': initial_capital,
@@ -285,11 +296,12 @@ class BacktestingEngine:
 
         # Strategy parameters from [strategy] config
         strategy_config = self.config.get('strategy', {})
-        n_period = strategy_config.get('n_day_high_period')
+        # n_period from strategy_config is used for initial check, but self.signal_generator.n should be the authoritative source for signal calculation
+        n_period_from_config = strategy_config.get('n_day_high_period') # Keep for initial check if needed, or rely on signal_generator's
         buy_cash_percentage = strategy_config.get('buy_cash_percentage')
         # risk_free_rate for reporter is fetched later
 
-        if n_period is None:
+        if n_period_from_config is None: # Check against the one from config for this initial validation
             print("Error: 'n_day_high_period' is not specified in [strategy] config.")
             return # Critical for this strategy
         if buy_cash_percentage is None:
@@ -313,245 +325,222 @@ class BacktestingEngine:
                      self._update_portfolio_value(current_price=getattr(row, 'close'), timestamp=getattr(row, 'timestamp'))
                 continue
 
-            # BUY Signal Logic (remains largely the same)
+            # BUY Signal Logic (based on D-1's high breakout of N-day high ending D-2)
             buy_signal = None
+            # current_idx is the index for D (current processing day in the loop)
+            # We need at least n_period days before D-1, so D-1 needs index n_period.
+            # Thus, D (current_idx) needs to be at least n_period + 1.
             if self.portfolio['asset_qty'] == 0: # Only check for buy if we don't hold assets
-                if current_idx >= n_period:
-                    # Signal generation uses daily data up to the current day
-                    historical_data_for_signal = self.daily_historical_data.iloc[current_idx - n_period : current_idx]
+                # self.signal_generator.n is the authoritative N for the signal
+                if current_idx >= self.signal_generator.n + 1:
                     try:
-                        if current_timestamp_utc.tzinfo is None:
-                            current_datetime_utc8 = current_timestamp_utc.tz_localize('UTC').tz_convert('Asia/Shanghai')
-                        else:
-                            current_datetime_utc8 = current_timestamp_utc.tz_convert('Asia/Shanghai')
+                        # Prepare data for the signal generator
+                        previous_day_row = self.daily_historical_data.iloc[current_idx - 1]
+                        previous_day_high = previous_day_row['high']
+                        previous_day_timestamp_utc = previous_day_row['timestamp']
+                        previous_day_close = previous_day_row['close'] # For fallback price
 
-                        # Default to daily high, will be updated if hourly calculation is successful
-                        effective_current_day_high = daily_high_for_signal_fallback
+                        # Data for N-day high calculation (N days ending D-2)
+                        # D-2 is current_idx - 2. D-1 is current_idx -1.
+                        # End index for slice is current_idx - 1 (exclusive, so it takes up to current_idx - 2)
+                        # Start index is current_idx - 1 - N
+                        start_index_for_n_days = current_idx - 1 - self.signal_generator.n
+                        end_index_for_n_days = current_idx - 1
+                        historical_data_for_signal = self.daily_historical_data.iloc[start_index_for_n_days:end_index_for_n_days]
 
-                        try:
-                            current_day_start_utc = current_timestamp_utc.normalize()
-                            buy_window_end_hour, buy_window_end_minute = map(int, self.signal_generator.buy_window_end_str.split(':'))
+                        # Contextual datetime for signal check (e.g., start of D-1 in UTC+8)
+                        contextual_datetime_for_signal_check_utc8 = previous_day_timestamp_utc.tz_convert('Asia/Shanghai').normalize()
+                        logging.info(f"Debug: Checking buy signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}). N-day data ends {historical_data_for_signal['timestamp'].iloc[-1].strftime('%Y-%m-%d') if not historical_data_for_signal.empty else 'N/A'}.")
 
-                            target_buy_limit_datetime_utc8 = current_datetime_utc8.replace(
-                                hour=buy_window_end_hour,
-                                minute=buy_window_end_minute,
-                                second=0,
-                                microsecond=0
-                            )
-                            target_buy_hourly_limit_utc = target_buy_limit_datetime_utc8.tz_convert('UTC')
 
-                            # Additional filter: ensure hourly data is within the current day being processed by the daily loop
-                            # This avoids looking at hourly data from previous days if target_buy_hourly_limit_utc is very early.
-                            # And also ensures we don't look into the next day's hourly data.
-                            current_day_end_utc = current_day_start_utc + pd.Timedelta(days=1)
-                            # print(f'Current day start UTC: {current_day_start_utc}, end UTC: {current_day_end_utc}, ')
-
-                            hourly_candles_before_buy_limit = self.hourly_historical_data[
-                                (self.hourly_historical_data['timestamp'] >= current_day_start_utc) &
-                                (self.hourly_historical_data['timestamp'] < target_buy_hourly_limit_utc) & # Strictly before the limit
-                                (self.hourly_historical_data['timestamp'] < current_day_end_utc) # And within the current day
-                            ]
-
-                            if not hourly_candles_before_buy_limit.empty:
-                                calculated_hourly_high = hourly_candles_before_buy_limit['high'].max()
-                                if pd.notna(calculated_hourly_high):
-                                    logging.info(f"Timestamp {current_timestamp_utc}: Calculated current_day_high for signal from hourly data: {calculated_hourly_high:.2f} (up to {target_buy_hourly_limit_utc} UTC)")
-                                    effective_current_day_high = calculated_hourly_high
-                                else:
-                                    logging.warning(f"Timestamp {current_timestamp_utc}: Max high from hourly data for signal is NaN. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
-                            else:
-                                logging.info(f"Timestamp {current_timestamp_utc}: No hourly candles found before {target_buy_hourly_limit_utc} UTC for signal's current_day_high. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
-
-                        except Exception as e_hourly_high_signal:
-                            logging.error(f"Timestamp {current_timestamp_utc}: Error calculating current_day_high for signal from hourly data: {e_hourly_high_signal}. Using daily high fallback: {daily_high_for_signal_fallback:.2f}")
+                        # The complex calculation for `effective_current_day_high` is removed as per plan.
+                        # The signal is now based on `previous_day_high`.
 
                         buy_signal = self.signal_generator.check_breakout_signal(
                             daily_ohlcv_data=historical_data_for_signal,
-                            current_day_high=effective_current_day_high,
-                            # current_day_high=daily_high_for_signal_fallback,
-                            current_datetime_utc8=current_datetime_utc8
+                            previous_day_high=previous_day_high,
+                            current_datetime_utc8=contextual_datetime_for_signal_check_utc8 # Context for logging in generator
                         )
+                    except IndexError:
+                        logging.warning(f"IndexError during data preparation for buy signal at current_idx {current_idx}. Not enough historical data available for the required N-day period + previous day. Skipping signal check.")
+                        buy_signal = None
                     except Exception as e:
-                        logging.error(f"Error during BUY signal generation prep at {current_timestamp_utc}: {e}")
+                        logging.error(f"Error during BUY signal generation prep for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): {e}")
                         buy_signal = None
 
             # Process BUY Signal
             if buy_signal == "BUY":
-                timestamp_for_buy_order = current_timestamp_utc # Initialize with daily timestamp as per requirement
+                # If signal is BUY, it's for D-1. We try to buy at target time on D-1.
+                # `timestamp_for_buy_order` should be on D-1.
+                # `price_for_buy_order` is determined by hourly data on D-1.
 
                 # Ensure we are not already holding assets before buying
                 if self.portfolio['asset_qty'] == 0:
-                    # Determine the price for the BUY order using hourly data
-                    price_for_buy_order = current_close_price # Default to daily close price for fallback
+                    price_for_buy_order = previous_day_close # Default to D-1's daily close price for fallback
+                    timestamp_for_buy_order = previous_day_timestamp_utc # Default to D-1's daily timestamp for fallback
                     buy_executed_at_specific_time = False
 
-                    buy_window_end_str = self.signal_generator.buy_window_end_str
+                    # Use self.buy_window_end_config_str stored from config, not from signal_generator
+                    # buy_window_end_str = self.signal_generator.buy_window_end_str # Old way
+                    buy_window_end_str = self.buy_window_end_config_str # e.g., "16:00"
+
 
                     try:
                         buy_hour, buy_minute = map(int, buy_window_end_str.split(':'))
 
-                        # current_datetime_utc8 is from the signal generation step
-                        target_buy_datetime_utc8 = current_datetime_utc8.replace(hour=buy_hour, minute=buy_minute, second=0, microsecond=0)
-                        target_buy_datetime_utc = target_buy_datetime_utc8.tz_convert('UTC')
+                        # Base for target_buy_time is previous_day_timestamp_utc (D-1's timestamp)
+                        previous_day_dt_utc8 = previous_day_timestamp_utc.tz_convert('Asia/Shanghai')
+                        target_buy_datetime_utc8 = previous_day_dt_utc8.replace(hour=buy_hour, minute=buy_minute, second=0, microsecond=0)
+                        target_buy_time_as_utc = target_buy_datetime_utc8.tz_convert('UTC')
 
-                        logging.info(f"BUY signal: Attempting to find hourly candle for buy time {buy_window_end_str} UTC+8 (which is {target_buy_datetime_utc} UTC).")
+                        logging.info(f"BUY signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Attempting to find hourly candle for buy time {buy_window_end_str} UTC+8 (which is {target_buy_time_as_utc} UTC).")
 
                         exact_hourly_candle = self.hourly_historical_data[
-                            self.hourly_historical_data['timestamp'] == target_buy_datetime_utc
+                            self.hourly_historical_data['timestamp'] == target_buy_time_as_utc
                         ]
 
                         if not exact_hourly_candle.empty:
                             selected_hourly_candle = exact_hourly_candle.iloc[0]
-                            price_for_buy_order = selected_hourly_candle['open']
+                            price_for_buy_order = selected_hourly_candle['open'] # Use open of the target hour
+                            timestamp_for_buy_order = selected_hourly_candle['timestamp'] # Timestamp of the hourly candle
                             buy_executed_at_specific_time = True
-                            # Update timestamp for buy order and log
-                            timestamp_for_buy_order = selected_hourly_candle['timestamp']
-                            logging.info(f"BUY order will use timestamp from hourly candle: {timestamp_for_buy_order}")
                             logging.info(
-                                f"BUY signal: Using HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
-                                f"{selected_hourly_candle['timestamp']} (UTC) for order (target: {buy_window_end_str} UTC+8)."
+                                f"BUY signal (D-1 context): Using HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
+                                f"{timestamp_for_buy_order} (UTC) for order (target time on D-1: {buy_window_end_str} UTC+8)."
                             )
                         else:
                             logging.warning(
-                                f"BUY signal: Exact hourly candle for {target_buy_datetime_utc} (UTC) NOT found. "
-                                f"Attempting to find first candle AT or AFTER target time on the same day."
+                                f"BUY signal (D-1 context): Exact hourly candle for {target_buy_time_as_utc} (UTC) NOT found. "
+                                f"Attempting to find first candle AT or AFTER target time on D-1."
                             )
-                            current_processing_day_utc_normalized = target_buy_datetime_utc.normalize()
-                            next_day_utc_normalized = current_processing_day_utc_normalized + pd.Timedelta(days=1)
+                            # Search window: from target_buy_time_as_utc up to the end of D-1 (UTC)
+                            # D-1's UTC timestamp is previous_day_timestamp_utc. End of D-1 is start of D.
+                            day_after_previous_day_start_utc = (previous_day_timestamp_utc.normalize() + pd.Timedelta(days=1))
 
                             alternative_hourly_candles = self.hourly_historical_data[
-                                (self.hourly_historical_data['timestamp'] >= target_buy_datetime_utc) &
-                                (self.hourly_historical_data['timestamp'] < next_day_utc_normalized)
+                                (self.hourly_historical_data['timestamp'] >= target_buy_time_as_utc) &
+                                (self.hourly_historical_data['timestamp'] < day_after_previous_day_start_utc) # Strictly before start of D
                             ]
 
                             if not alternative_hourly_candles.empty:
                                 selected_hourly_candle = alternative_hourly_candles.iloc[0]
                                 price_for_buy_order = selected_hourly_candle['open']
-                                buy_executed_at_specific_time = True
-                                # Update timestamp for buy order and log
                                 timestamp_for_buy_order = selected_hourly_candle['timestamp']
-                                logging.info(f"BUY order will use timestamp from hourly candle: {timestamp_for_buy_order}")
+                                buy_executed_at_specific_time = True
                                 logging.info(
-                                    f"BUY signal: Using alternative HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
-                                    f"{selected_hourly_candle['timestamp']} (UTC) as primary target was missed (within same day)."
+                                    f"BUY signal (D-1 context): Using alternative HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
+                                    f"{timestamp_for_buy_order} (UTC) as primary target was missed (within D-1)."
                                 )
                             else:
+                                # Fallback to D-1's daily close price and timestamp
+                                price_for_buy_order = previous_day_close # Already set as default
+                                timestamp_for_buy_order = previous_day_timestamp_utc # Already set as default
                                 logging.warning(
-                                    f"BUY signal: No suitable alternative hourly candle found on {target_buy_datetime_utc.date()} (UTC) at or after {buy_window_end_str} UTC+8. "
-                                    f"Falling back to DAILY CLOSE price {current_close_price:.2f} from daily candle at {current_timestamp_utc}."
+                                    f"BUY signal (D-1 context): No suitable alternative hourly candle found on D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}) at or after {buy_window_end_str} UTC+8. "
+                                    f"Falling back to D-1 DAILY CLOSE price {price_for_buy_order:.2f} from daily candle at {timestamp_for_buy_order}."
                                 )
-                                # This is a point of fallback to daily price, log daily timestamp usage later if buy_executed_at_specific_time is False
+                                # buy_executed_at_specific_time remains False
 
                     except Exception as e:
-                        logging.error(f"BUY signal: Error determining buy price using buy_window_end_time ('{buy_window_end_str}'): {e}. "
-                                      f"Falling back to DAILY CLOSE price {current_close_price:.2f} from daily candle at {current_timestamp_utc}.")
-                        # Exception implies fallback, log daily timestamp usage later if buy_executed_at_specific_time is False
+                        # Fallback to D-1's daily close price and timestamp
+                        price_for_buy_order = previous_day_close # Ensure fallback
+                        timestamp_for_buy_order = previous_day_timestamp_utc # Ensure fallback
+                        logging.error(f"BUY signal (D-1 context): Error determining buy price using target time ('{buy_window_end_str} UTC+8') for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): {e}. "
+                                      f"Falling back to D-1 DAILY CLOSE price {price_for_buy_order:.2f} from daily candle at {timestamp_for_buy_order}.")
+                        buy_executed_at_specific_time = False
 
-                    # Log which timestamp is being used for the order if falling back to daily price
-                    if not buy_executed_at_specific_time:
-                        logging.info(f"BUY order will use timestamp from daily candle: {timestamp_for_buy_order}")
 
                     cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
-                    if price_for_buy_order > 0: # Use the determined price for buy order
+                    if price_for_buy_order > 0:
                         quantity_to_buy = cash_to_spend_on_buy / price_for_buy_order
                         if quantity_to_buy > 0:
-                            logging.info(f"Timestamp {current_timestamp_utc}: BUY signal. Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f} (Specific time target: {'Yes' if buy_executed_at_specific_time else 'No - Fallback used'}).")
+                            logging.info(f"BUY signal (D-1 context {previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f} (Target time on D-1: {'Yes, hourly' if buy_executed_at_specific_time else 'No, D-1 daily fallback'}). Order timestamp: {timestamp_for_buy_order}")
                             self._simulate_order(
-                                timestamp=timestamp_for_buy_order, # Use the determined timestamp for the order
+                                timestamp=timestamp_for_buy_order, # This is now correctly on D-1
                                 order_type='BUY',
                                 symbol=symbol,
-                                price=price_for_buy_order, # Price from hourly data (or daily fallback)
+                                price=price_for_buy_order,
                                 quantity=quantity_to_buy
                             )
                 else:
-                    logging.info(f"Timestamp {current_timestamp_utc}: BUY signal received, but already holding assets. Skipping buy.")
+                    logging.info(f"BUY signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Signal received, but already holding assets (checked at D: {current_timestamp_utc.strftime('%Y-%m-%d')}). Skipping buy.")
 
-
-            # SELL Logic (Holding Period Based)
-            # This logic is independent of SignalGenerator and checked on each iteration if assets are held.
-            timestamp_for_sell_order = current_timestamp_utc # Initialize with daily timestamp
-
+            # SELL Logic (Stop-Loss based on hourly lows during holding period on current day D)
             if self.portfolio['asset_qty'] > 0 and self.portfolio.get('asset_entry_timestamp_utc') is not None:
-                entry_ts_utc = self.portfolio['asset_entry_timestamp_utc']
-                # Ensure current_timestamp_utc and entry_ts_utc are pandas Timestamps and UTC localized
-                if not isinstance(entry_ts_utc, pd.Timestamp):
-                    entry_ts_utc = pd.Timestamp(entry_ts_utc, tz='UTC')
+                asset_entry_price = self.portfolio['asset_entry_price']
+                asset_entry_timestamp_utc = self.portfolio['asset_entry_timestamp_utc']
+
+                # Define the observation window for the current day `current_timestamp_utc` (which is D's daily timestamp)
+                # The holding period starts from the actual entry time of the asset.
+                # The new sell logic checks hourly lows on day D *within* self.holding_period_hours *from the start of day D*.
+                # This means we are checking for a stop-loss condition during a window on day D.
+
+                # Ensure current_timestamp_utc is properly timezone-aware (it should be from the loop)
                 if current_timestamp_utc.tzinfo is None:
-                    current_ts_utc_localized = current_timestamp_utc.tz_localize('UTC')
+                    current_day_start_utc = pytz.utc.localize(current_timestamp_utc).normalize()
                 else:
-                    current_ts_utc_localized = current_timestamp_utc.tz_convert('UTC')
+                    current_day_start_utc = current_timestamp_utc.normalize() # current_timestamp_utc is D's daily timestamp
 
-                # Calculate days passed. Sell on the day *after* the holding period.
-                # E.g., hold_period=1 day. Buy Mon. Hold Tue. Sell Wed.
-                # Mon (day 0). Tue (day 1). Wed (day 2). Sell if days_passed >= hold_period + 1
-                # If hold_period=0 days. Buy Mon. Sell Tue. Sell if days_passed >= 1
-                days_passed = (current_ts_utc_localized.normalize() - entry_ts_utc.normalize()).days
+                # The observation window for stop-loss check ends `self.holding_period_hours` from the start of day D.
+                # This is an interpretation of "price drops below entry price within holding_period_hours".
+                # This means on any given day D, we monitor hourly lows for `holding_period_hours` from market open (00:00 UTC of day D).
+                observation_window_end_utc = current_day_start_utc + pd.Timedelta(hours=self.holding_period_hours)
 
-                current_dt_utc8_for_sell_check = current_ts_utc_localized.tz_convert('Asia/Shanghai')
-                current_time_utc8 = current_dt_utc8_for_sell_check.time()
+                logging.debug(f"SELL Check (Day D: {current_day_start_utc.strftime('%Y-%m-%d')}): Asset entry price: {asset_entry_price:.2f}. Stop-loss observation window: {current_day_start_utc.strftime('%H:%M')} to {observation_window_end_utc.strftime('%H:%M')} UTC.")
 
-                is_target_sell_day = days_passed >= self.holding_period_days
+                # Filter hourly data for the observation window on the current day D
+                relevant_hourly_candles_for_sell = self.hourly_historical_data[
+                    (self.hourly_historical_data['timestamp'] >= current_day_start_utc) &
+                    (self.hourly_historical_data['timestamp'] < observation_window_end_utc) # Strictly before the window ends
+                ].sort_values(by='timestamp')
 
-                if is_target_sell_day:
-                    logging.info(
-                        f"Timestamp {current_timestamp_utc}: Holding period sell condition met. "
-                        f"Holding period: {self.holding_period_days} days. Days passed: {days_passed}. "
-                        f"Sell window: {self.sell_window_start_str} - {self.sell_window_end_str} UTC+8."
-                    )
+                triggered_sell = False
+                sell_price = 0.0
+                timestamp_for_sell_order = None
 
-                    price_for_sell_order = getattr(row, 'close') # Default to current daily close price
+                if not relevant_hourly_candles_for_sell.empty:
+                    for i, candle_row in enumerate(relevant_hourly_candles_for_sell.itertuples(index=False)):
+                        # getattr is safer if columns might be missing, though standard OHLCV should have 'low' and 'timestamp'
+                        candle_low = getattr(candle_row, 'low', float('inf'))
+                        candle_timestamp = getattr(candle_row, 'timestamp')
 
-                    # Target datetime for fetching sell price is the END of the sell window on the current day (UTC+8)
-                    target_sell_datetime_utc8 = current_dt_utc8_for_sell_check.replace(
-                        hour=self.sell_window_end_time.hour,
-                        minute=self.sell_window_end_time.minute,
-                        second=0, microsecond=0
-                    )
-                    target_utc_for_hourly_sell_price = target_sell_datetime_utc8.tz_convert('UTC')
+                        if candle_low < asset_entry_price:
+                            logging.info(f"SELL TRIGGER (Stop-Loss on Day D: {current_day_start_utc.strftime('%Y-%m-%d')}): Hourly candle at {candle_timestamp} (UTC) with low {candle_low:.2f} < entry price {asset_entry_price:.2f}.")
+                            triggered_sell = True
 
-                    logging.info(f"SELL logic: Target sell time for price check is {target_sell_datetime_utc8.strftime('%Y-%m-%d %H:%M:%S')} UTC+8 ({target_utc_for_hourly_sell_price.strftime('%Y-%m-%d %H:%M:%S')} UTC).")
+                            # Determine sell price: open of next candle, or close of current if no next.
+                            if i + 1 < len(relevant_hourly_candles_for_sell):
+                                next_candle = relevant_hourly_candles_for_sell.iloc[i+1]
+                                sell_price = getattr(next_candle, 'open')
+                                timestamp_for_sell_order = getattr(next_candle, 'timestamp')
+                                logging.info(f"Attempting to sell at OPEN of next hourly candle: {sell_price:.2f} at {timestamp_for_sell_order} (UTC).")
+                            else:
+                                sell_price = getattr(candle_row, 'close') # Fallback to close of triggering candle
+                                timestamp_for_sell_order = candle_timestamp
+                                logging.info(f"Attempting to sell at CLOSE of triggering hourly candle (last in observation window or data): {sell_price:.2f} at {timestamp_for_sell_order} (UTC).")
+                            break # Exit loop once triggered
+                else:
+                    logging.debug(f"SELL Check (Day D: {current_day_start_utc.strftime('%Y-%m-%d')}): No hourly candles found within the observation window [{current_day_start_utc.strftime('%H:%M')}-{observation_window_end_utc.strftime('%H:%M')} UTC].")
 
-                    # Search for the first hourly candle AT or AFTER target_utc_for_hourly_sell_price
-                    # but BEFORE the start of the next day (relative to target_utc_for_hourly_sell_price.date() in UTC)
-                    search_start_utc = target_utc_for_hourly_sell_price
-                    # Normalize to get the beginning of the day in UTC, then add 1 day for the search boundary
-                    search_end_utc = (target_utc_for_hourly_sell_price.normalize() + pd.Timedelta(days=1))
 
-                    relevant_hourly_candles_for_sell = self.hourly_historical_data[
-                        (self.hourly_historical_data['timestamp'] >= search_start_utc) &
-                        (self.hourly_historical_data['timestamp'] < search_end_utc) # Strictly less than next day start
-                    ]
-
-                    if not relevant_hourly_candles_for_sell.empty:
-                        selected_hourly_candle_for_sell = relevant_hourly_candles_for_sell.iloc[0]
-                        price_for_sell_order = selected_hourly_candle_for_sell['open']
-                        timestamp_for_sell_order = selected_hourly_candle_for_sell['timestamp'] # Update timestamp
-                        logging.info(f"SELL order will use timestamp from hourly candle: {timestamp_for_sell_order}")
-                        logging.info(
-                            f"SELL condition: Using HOURLY OPEN price {price_for_sell_order:.2f} from candle at "
-                            f"{selected_hourly_candle_for_sell['timestamp']} (UTC) for order. Searched from {search_start_utc} (UTC) within the same day."
-                        )
-                    else:
-                        daily_close_price_for_fallback = getattr(row, 'close')
-                        price_for_sell_order = daily_close_price_for_fallback
-                        logging.info(f"SELL order will use timestamp from daily candle: {timestamp_for_sell_order}")
-                        logging.warning(
-                            f"SELL condition: No hourly candle found at or after {search_start_utc} (UTC) on {search_start_utc.date()} (UTC). "
-                            f"Falling back to DAILY CLOSE price {price_for_sell_order:.2f} from daily candle at {current_timestamp_utc}."
-                        )
-
+                if triggered_sell:
                     quantity_to_sell = self.portfolio['asset_qty'] * self.sell_asset_percentage
-                    if quantity_to_sell > 0:
-                        logging.info(f"Attempting to SELL {quantity_to_sell:.4f} {symbol} at determined price {price_for_sell_order:.2f}")
+                    if quantity_to_sell > 0 and sell_price > 0 and timestamp_for_sell_order is not None:
+                        logging.info(f"Executing SELL order (Stop-Loss): {quantity_to_sell:.4f} {symbol} at {sell_price:.2f}. Order timestamp: {timestamp_for_sell_order}")
                         self._simulate_order(
-                            timestamp=timestamp_for_sell_order, # Use the determined timestamp for the order
+                            timestamp=timestamp_for_sell_order,
                             order_type='SELL',
                             symbol=symbol,
-                            price=price_for_sell_order, # Price from hourly open (or daily close fallback)
+                            price=sell_price,
                             quantity=quantity_to_sell
                         )
+                    elif not (sell_price > 0):
+                        logging.warning(f"SELL TRIGGERED but sell_price is not valid ({sell_price}). Order not placed.")
+                    elif timestamp_for_sell_order is None:
+                        logging.warning(f"SELL TRIGGERED but timestamp_for_sell_order is None. Order not placed.")
 
-            self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc)
+
+            self._update_portfolio_value(current_price=current_close_price, timestamp=current_timestamp_utc) # uses D's close and D's timestamp
 
         print("\nBacktest simulation complete.")
         print(f"Final portfolio state: {self.portfolio}")
