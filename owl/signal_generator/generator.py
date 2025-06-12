@@ -20,7 +20,7 @@ class SignalGenerator:
         self.n = n_day_high_period
         # Removed buy_window_start_str and buy_window_end_str attributes
 
-    def check_breakout_signal(self, daily_ohlcv_data, previous_day_high, current_datetime_utc8):
+    def check_breakout_signal(self, daily_ohlcv_data, previous_day_high, previous_day_timestamp_utc, current_timestamp_utc):
         """
         Checks for an N-day high breakout buy signal based on the previous day's high.
 
@@ -30,39 +30,13 @@ class SignalGenerator:
                                              Must contain 'high' and 'timestamp' columns.
                                              The 'timestamp' should be datetime objects (UTC).
             previous_day_high (float): The highest price reached on the "previous day".
-            current_datetime_utc8 (datetime): The current date and time in UTC+8, primarily for logging context.
+            previous_day_timestamp_utc (datetime): The current date and time in UTC+8, primarily for logging context.
                                               This parameter is not used for signal filtering logic within this method.
 
         Returns:
             str or None: "BUY" if a buy signal is generated, None otherwise.
         """
-        # --- Start: Resampling Logic ---
         data_for_processing = daily_ohlcv_data # Default to original data
-
-        if daily_ohlcv_data is not None and not daily_ohlcv_data.empty and 'timestamp' in daily_ohlcv_data.columns:
-            # Ensure 'timestamp' is datetime
-            # Making a copy to avoid SettingWithCopyWarning if daily_ohlcv_data is a slice
-            df_copy = daily_ohlcv_data.copy()
-            df_copy['timestamp'] = pd.to_datetime(df_copy['timestamp'])
-
-            if len(df_copy) >= 2:
-                time_diff = df_copy['timestamp'].iloc[1] - df_copy['timestamp'].iloc[0]
-                if time_diff < pd.Timedelta(days=1):
-                    logging.info("SignalGenerator: Detected sub-daily data. Resampling to daily.")
-                    # Set timestamp as index for resampling
-                    resampled_data = df_copy.set_index('timestamp').resample('D').agg(
-                        {'high': 'max'} # Add other aggregations if needed, e.g., open, low, close
-                    ).reset_index()
-                    # Ensure 'timestamp' is at the start of the day (midnight)
-                    resampled_data['timestamp'] = resampled_data['timestamp'].dt.normalize()
-                    data_for_processing = resampled_data
-                else:
-                    data_for_processing = df_copy # Use the copy with corrected datetime type
-            elif len(df_copy) == 1: # If only one row, use it as is (with corrected datetime type)
-                 data_for_processing = df_copy
-            # If df_copy is empty, data_for_processing remains daily_ohlcv_data (which will be caught by later checks)
-
-        # --- End: Resampling Logic ---
 
         # 1. Validate input DataFrame (using data_for_processing)
         if not isinstance(data_for_processing, pd.DataFrame) or data_for_processing.empty:
@@ -70,9 +44,6 @@ class SignalGenerator:
             return None
         if not {'high', 'timestamp'}.issubset(data_for_processing.columns):
             print("SignalGenerator: OHLCV data (after potential resampling) must contain 'high' and 'timestamp' columns. No signal.")
-            return None
-        if len(data_for_processing) < self.n:
-            print(f"SignalGenerator: Not enough historical data ({len(data_for_processing)} days after potential resampling) to calculate {self.n}-day high. Need at least {self.n} days. No signal.")
             return None
 
         # 2. Calculate N-day high from historical data (excluding 'today')
@@ -83,15 +54,13 @@ class SignalGenerator:
         n_day_data = historical_data.tail(self.n)
         n_day_high_value = n_day_data['high'].max()
 
-        print(f"SignalGenerator: Calculated {self.n}-day high (from data before previous day): {n_day_high_value}")
-        print(f"SignalGenerator: Previous day's high for comparison: {previous_day_high}")
+        # print(f"SignalGenerator: Calculated {self.n}-day high (from data before previous day): {n_day_high_value}")
+        # print(f"SignalGenerator: Previous day's high for comparison: {previous_day_high}")
 
         # 3. Check for breakout
         breakout_occurred = previous_day_high > n_day_high_value
         if breakout_occurred:
-            print(f"SignalGenerator: Breakout detected! Previous day's high {previous_day_high} > {self.n}-day high {n_day_high_value}.")
-            # Logging context using current_datetime_utc8 (optional)
-            logging.info(f"BUY signal generated for date context {current_datetime_utc8.strftime('%Y-%m-%d')}, based on previous day's high.")
+            print(f"\n\nSignalGenerator: Breakout detected! Previous day's high {previous_day_high} > {self.n}-day high {n_day_high_value}. previous day {previous_day_timestamp_utc.strftime('%Y-%m-%d')}, current day {current_timestamp_utc.strftime('%Y-%m-%d')}")
             return "BUY"
         else:
             # print(f"SignalGenerator: No breakout. Previous day's high {previous_day_high} <= {self.n}-day high {n_day_high_value}.")
@@ -136,9 +105,9 @@ if __name__ == "__main__":
     previous_day_high_breakout = n_day_high_from_hist + 1  # Breakout
     previous_day_high_no_breakout = n_day_high_from_hist - 1 # No breakout
 
-    # current_datetime_utc8 is for context (e.g., "today" when the signal is checked)
+    # previous_day_timestamp_utc is for context (e.g., "today" when the signal is checked)
     # This would be the day *after* "previous_day".
-    # E.g., if previous_day_high was for Oct 26th, current_datetime_utc8 is for Oct 27th.
+    # E.g., if previous_day_high was for Oct 26th, previous_day_timestamp_utc is for Oct 27th.
     context_datetime = datetime(2023, 10, 27, 10, 0, 0) # Arbitrary time, not used for filtering
 
     print(f"\n--- Scenario 1: Breakout ---")

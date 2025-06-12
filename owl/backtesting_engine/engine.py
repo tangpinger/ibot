@@ -316,7 +316,6 @@ class BacktestingEngine:
             try:
                 # Ensure 'timestamp', 'high', 'low', 'close' are actual column names in your DataFrame
                 current_timestamp_utc = getattr(row, 'timestamp')
-                daily_high_for_signal_fallback = getattr(row, 'high') # From daily data
                 current_close_price = getattr(row, 'close') # From daily data
             except AttributeError as e:
                 print(f"Error accessing data in row (index {getattr(row, 'Index', 'N/A')}): {row}. Missing required OHLCV attribute. Details: {e}")
@@ -349,17 +348,14 @@ class BacktestingEngine:
                         historical_data_for_signal = self.daily_historical_data.iloc[start_index_for_n_days:end_index_for_n_days]
 
                         # Contextual datetime for signal check (e.g., start of D-1 in UTC+8)
-                        contextual_datetime_for_signal_check_utc8 = previous_day_timestamp_utc.tz_convert('Asia/Shanghai').normalize()
                         logging.info(f"Debug: Checking buy signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}). N-day data ends {historical_data_for_signal['timestamp'].iloc[-1].strftime('%Y-%m-%d') if not historical_data_for_signal.empty else 'N/A'}.")
-
-
                         # The complex calculation for `effective_current_day_high` is removed as per plan.
                         # The signal is now based on `previous_day_high`.
-
                         buy_signal = self.signal_generator.check_breakout_signal(
                             daily_ohlcv_data=historical_data_for_signal,
                             previous_day_high=previous_day_high,
-                            current_datetime_utc8=contextual_datetime_for_signal_check_utc8 # Context for logging in generator
+                            previous_day_timestamp_utc=previous_day_timestamp_utc, # For logging in generator
+                            current_timestamp_utc=current_timestamp_utc # For logging in generator
                         )
                     except IndexError:
                         logging.warning(f"IndexError during data preparation for buy signal at current_idx {current_idx}. Not enough historical data available for the required N-day period + previous day. Skipping signal check.")
@@ -393,7 +389,7 @@ class BacktestingEngine:
                         target_buy_datetime_utc8 = previous_day_dt_utc8.replace(hour=buy_hour, minute=buy_minute, second=0, microsecond=0)
                         target_buy_time_as_utc = target_buy_datetime_utc8.tz_convert('UTC')
 
-                        logging.info(f"BUY signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Attempting to find hourly candle for buy time {buy_window_end_str} UTC+8 (which is {target_buy_time_as_utc} UTC).")
+                        print(f"BUY signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Attempting to find hourly candle for buy time {buy_window_end_str} UTC+8 (which is {target_buy_time_as_utc} UTC).")
 
                         exact_hourly_candle = self.hourly_historical_data[
                             self.hourly_historical_data['timestamp'] == target_buy_time_as_utc
@@ -404,7 +400,7 @@ class BacktestingEngine:
                             price_for_buy_order = selected_hourly_candle['open'] # Use open of the target hour
                             timestamp_for_buy_order = selected_hourly_candle['timestamp'] # Timestamp of the hourly candle
                             buy_executed_at_specific_time = True
-                            logging.info(
+                            print(
                                 f"BUY signal (D-1 context): Using HOURLY OPEN price {price_for_buy_order:.2f} from candle at "
                                 f"{timestamp_for_buy_order} (UTC) for order (target time on D-1: {buy_window_end_str} UTC+8)."
                             )

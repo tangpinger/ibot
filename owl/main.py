@@ -99,8 +99,6 @@ def main():
 
             signal_generator = SignalGenerator(
                 n_day_high_period=n_period,
-                buy_window_start_time_str=buy_start_str,
-                buy_window_end_time_str=buy_end_str
             )
 
             # Instantiate BacktestingEngine
