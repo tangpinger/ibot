@@ -445,19 +445,60 @@ class BacktestingEngine:
                                       f"Falling back to D-1 DAILY CLOSE price {price_for_buy_order:.2f} from daily candle at {timestamp_for_buy_order}.")
                         buy_executed_at_specific_time = False
 
+                    # <<< START OF NEW CONDITIONAL BUY LOGIC >>>
+                    # 1. Define Time Window for Check (Day D)
+                    # current_timestamp_utc is from the main loop (Day D's timestamp)
+                    if current_timestamp_utc.tzinfo is None:
+                        current_day_start_utc_for_check = pytz.utc.localize(current_timestamp_utc).normalize()
+                    else:
+                        current_day_start_utc_for_check = current_timestamp_utc.normalize()
 
-                    cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
-                    if price_for_buy_order > 0:
-                        quantity_to_buy = cash_to_spend_on_buy / price_for_buy_order
-                        if quantity_to_buy > 0:
-                            logging.info(f"BUY signal (D-1 context {previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Attempting to buy {quantity_to_buy:.4f} {symbol} at determined price {price_for_buy_order:.2f} (Target time on D-1: {'Yes, hourly' if buy_executed_at_specific_time else 'No, D-1 daily fallback'}). Order timestamp: {timestamp_for_buy_order}")
-                            self._simulate_order(
-                                timestamp=timestamp_for_buy_order, # This is now correctly on D-1
-                                order_type='BUY',
-                                symbol=symbol,
-                                price=price_for_buy_order,
-                                quantity=quantity_to_buy
-                            )
+                    observation_end_time_utc_for_check = current_day_start_utc_for_check + pd.Timedelta(hours=self.holding_period_hours)
+
+                    # 2. Filter Hourly Data for the Check Window (Day D)
+                    # Ensure self.hourly_historical_data['timestamp'] is UTC timezone-aware (handled by data fetcher/processing)
+                    hourly_data_for_check = self.hourly_historical_data[
+                        (self.hourly_historical_data['timestamp'] >= current_day_start_utc_for_check) &
+                        (self.hourly_historical_data['timestamp'] < observation_end_time_utc_for_check) # Exclusive of end time
+                    ]
+
+                    # 3. Iterate and Check Condition
+                    buy_condition_met_on_day_d = False
+                    triggering_hourly_low = None
+                    triggering_hourly_timestamp = None
+
+                    if not hourly_data_for_check.empty:
+                        for hourly_candle_row in hourly_data_for_check.itertuples():
+                            if hourly_candle_row.low < price_for_buy_order: # price_for_buy_order is from D-1 context
+                                buy_condition_met_on_day_d = True
+                                triggering_hourly_low = hourly_candle_row.low
+                                triggering_hourly_timestamp = hourly_candle_row.timestamp
+                                logging.info(f"BUY Condition Met on Day D: Hourly low {triggering_hourly_low:.2f} at {triggering_hourly_timestamp} is below price_for_buy_order {price_for_buy_order:.2f}.")
+                                break
+                    else:
+                        logging.info(f"BUY Condition Check on Day D: No hourly data found between {current_day_start_utc_for_check.strftime('%Y-%m-%d %H:%M')} and {observation_end_time_utc_for_check.strftime('%Y-%m-%d %H:%M')}.")
+
+                    # 4. Conditional Order Execution
+                    if buy_condition_met_on_day_d:
+                        logging.info(f"BUY signal (D-1 context {previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Condition on Day D met. Attempting to buy {symbol} using D-1 price {price_for_buy_order:.2f} and D-1 timestamp {timestamp_for_buy_order}.")
+                        cash_to_spend_on_buy = self.portfolio['cash'] * buy_cash_percentage
+                        if price_for_buy_order > 0:
+                            quantity_to_buy = cash_to_spend_on_buy / price_for_buy_order
+                            if quantity_to_buy > 0:
+                                self._simulate_order(
+                                    timestamp=timestamp_for_buy_order, # This is D-1's timestamp
+                                    order_type='BUY',
+                                    symbol=symbol,
+                                    price=price_for_buy_order, # This is D-1's price
+                                    quantity=quantity_to_buy
+                                )
+                            else:
+                                logging.warning(f"BUY order for D-1 signal (price: {price_for_buy_order:.2f}) skipped. Calculated quantity to buy is not positive on Day D ({quantity_to_buy:.4f}).")
+                        else:
+                            logging.warning(f"BUY order for D-1 signal skipped. price_for_buy_order ({price_for_buy_order:.2f}) is not positive on Day D.")
+                    else:
+                        logging.warning(f"BUY order for D-1 signal (price: {price_for_buy_order:.2f}, D-1 timestamp: {timestamp_for_buy_order}) skipped. Condition on Day D (low < price_for_buy_order between {current_day_start_utc_for_check.strftime('%Y-%m-%d %H:%M')} and {observation_end_time_utc_for_check.strftime('%Y-%m-%d %H:%M')}) not met.")
+                    # <<< END OF NEW CONDITIONAL BUY LOGIC >>>
                 else:
                     logging.info(f"BUY signal for D-1 ({previous_day_timestamp_utc.strftime('%Y-%m-%d')}): Signal received, but already holding assets (checked at D: {current_timestamp_utc.strftime('%Y-%m-%d')}). Skipping buy.")
 
